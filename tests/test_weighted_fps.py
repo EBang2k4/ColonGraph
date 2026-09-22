@@ -3,7 +3,8 @@ import unittest
 import torch
 from utils.node_sampling import (CoarseGradientImportance, farthest_point_sampling,
                                  weighted_farthest_point_sampling,
-                                 validate_index_aligned_reference)
+                                 validate_index_aligned_reference,
+                                 position_loss_gradient)
 
 
 class WeightedFPSTests(unittest.TestCase):
@@ -69,6 +70,24 @@ class WeightedFPSTests(unittest.TestCase):
                 weighted_farthest_point_sampling(torch.zeros(4, 3), 2, w)
         with self.assertRaises(FloatingPointError):
             stats.update(torch.full((4, 3), float('inf')), torch.ones(4, dtype=torch.bool))
+
+    def test_depth_component_gradient_is_isolated_from_total_backward(self):
+        xyz = torch.tensor([[1., -2., 3.], [-4., 5., -6.]], requires_grad=True)
+        depth_loss = xyz.square().sum()
+        image_loss = (3 * xyz).sum()
+        depth_gradient = position_loss_gradient(depth_loss, xyz)
+        self.assertIsNone(xyz.grad)
+        torch.testing.assert_close(depth_gradient, 2 * xyz.detach())
+        (depth_loss + image_loss).backward()
+        torch.testing.assert_close(xyz.grad, 2 * xyz.detach() + 3)
+
+        stats = CoarseGradientImportance(xyz.detach(), gradient_source='depth')
+        stats.update(depth_gradient, torch.tensor([True, False]))
+        stats.update(None, torch.tensor([True, True]))
+        result = stats.finalize()
+        self.assertEqual(result['gradient_source'], 'depth')
+        self.assertEqual(result['coarse_steps'], 2)
+        self.assertEqual(result['grad_count'].tolist(), [1, 0])
 
     def test_paired_reference_alignment_accepts_sparse_small_drift(self):
         reference = torch.arange(3000, dtype=torch.float32).reshape(1000, 3)

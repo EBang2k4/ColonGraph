@@ -13,7 +13,8 @@ def run(output, baseline):
     alpha = audit['alpha']
     joint = read(output/'joint_r6_audit.json')
     assert audit['all_checks_passed'] and joint['all_checks_passed']
-    report = dict(alpha=alpha, baseline=str(baseline), weighted=str(output), standard_metrics=a,
+    report = dict(alpha=alpha, gradient_source=audit.get('gradient_source', 'total'),
+                  baseline=str(baseline), weighted=str(output), standard_metrics=a,
                   weighted_metrics=b, weighted_minus_standard={k:b[k]-a[k] for k in a},
                   distribution=audit['distribution'], audits_passed=True,
                   timing=read(output/'training_summary.json'),
@@ -27,7 +28,8 @@ def run(output, baseline):
     }
     (output/'weighted_fps_comparison.json').write_text(json.dumps(report, indent=2)+'\n')
     lines = ['# Standard FPS vs Weighted FPS — joint B1-bbox + R6', '',
-             f'Same scene, 100 coarse + 30k fine, 2,000 nodes, K4, alpha={alpha:g}.', '',
+             f"Same scene, 100 coarse + 30k fine, 2,000 nodes, K4, alpha={alpha:g}, "
+             f"gradient source={audit.get('gradient_source', 'total')}.", '',
              '| Metric | Standard FPS | Weighted FPS | Difference |', '|---|---:|---:|---:|']
     for key in ('PSNR','SSIM','LPIPS','DEPTH_MSE'):
         lines.append(f'| {key} | {a[key]:.8f} | {b[key]:.8f} | {b[key]-a[key]:+.8f} |')

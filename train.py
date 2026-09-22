@@ -27,7 +27,8 @@ from arguments import ModelParams, PipelineParams, OptimizationParams, ModelHidd
 from utils.timer import Timer
 from utils import helper
 from utils.node_sampling import (CoarseGradientImportance, weighted_farthest_point_sampling,
-                                 build_gaussian_node_knn, validate_index_aligned_reference)
+                                 build_gaussian_node_knn, validate_index_aligned_reference,
+                                 position_loss_gradient)
 from scene.deformation_graph import SparseDeformationGraph
 
 
@@ -266,14 +267,22 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         else:
             psnr_ = psnr(images_concealing, gt_images).mean().double()  
         
+        importance_tracker = getattr(gaussians, "coarse_gradient_importance", None)
+        depth_position_gradient = None
+        if (stage == "coarse" and importance_tracker is not None and
+                importance_tracker.gradient_source == "depth"):
+            depth_position_gradient = position_loss_gradient(depth_loss, gaussians._xyz)
+
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"\n❌ Loss NaN/Inf at iteration {iteration}")
             if gaussians.deformation_mode == "node":
                 raise FloatingPointError(f"Non-finite {stage} loss at iteration {iteration}")
             
         loss.backward()
-        if stage == "coarse" and getattr(gaussians, "coarse_gradient_importance", None) is not None:
-            gaussians.coarse_gradient_importance.update(gaussians._xyz.grad, visibility_filter)
+        if stage == "coarse" and importance_tracker is not None:
+            gradient = (depth_position_gradient if importance_tracker.gradient_source == "depth"
+                        else gaussians._xyz.grad)
+            importance_tracker.update(gradient, visibility_filter)
         r6_diagnostic = None
         if (stage == "fine" and gaussians.appearance_model is not None and
                 (iteration == 1 or iteration % max(1, hyper.deformation_profile_interval) == 0 or
@@ -398,6 +407,8 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         raise ValueError("Weighted FPS requires node mode and 100 coarse iterations")
     if hyper.node_sampling_importance_reference and hyper.node_sampling != "weighted_fps":
         raise ValueError("An importance reference is valid only for weighted_fps")
+    if hyper.node_sampling_gradient_source not in ("total", "depth"):
+        raise ValueError("node_sampling_gradient_source must be total or depth")
     if hyper.color_model == "node_residual_mlp":
         if hyper.deformation_mode != "node":
             raise ValueError("node_residual_mlp requires deformation_mode=node")
@@ -419,7 +430,8 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=args.no_fine)
     if hyper.node_sampling == "weighted_fps" and not hyper.node_sampling_importance_reference:
-        gaussians.coarse_gradient_importance = CoarseGradientImportance(gaussians._xyz)
+        gaussians.coarse_gradient_importance = CoarseGradientImportance(
+            gaussians._xyz, hyper.node_sampling_gradient_source)
     timer.start()
     coarse_start = walltime.monotonic()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
@@ -438,6 +450,9 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
                 raise ValueError(f"Incomplete Weighted FPS importance reference: {reference_path}")
             if sampling_state["importance"].shape != (len(gaussians._xyz),):
                 raise ValueError("Importance reference Gaussian topology does not match")
+            source = sampling_state.get("gradient_source", "total")
+            if source != hyper.node_sampling_gradient_source:
+                raise ValueError(f"Importance reference source is {source}, requested {hyper.node_sampling_gradient_source}")
             sampling_state["current_post_coarse_xyz"] = gaussians._xyz.detach().clone()
             sampling_state["importance_reference_path"] = reference_path
             print(f"Weighted FPS: reusing audited coarse importance from {reference_path}", flush=True)

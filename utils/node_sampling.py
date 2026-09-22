@@ -9,7 +9,10 @@ class CoarseGradientImportance:
     Float64 moments avoid negative variance from cancellation. Invisible
     Gaussians are not observations, even if the global KNN loss has a gradient.
     """
-    def __init__(self, xyz):
+    def __init__(self, xyz, gradient_source="total"):
+        if gradient_source not in ("total", "depth"):
+            raise ValueError("gradient_source must be total or depth")
+        self.gradient_source = gradient_source
         self.grad_sum = torch.zeros_like(xyz, dtype=torch.float64)
         self.grad_sq_sum = torch.zeros(len(xyz), device=xyz.device, dtype=torch.float64)
         self.grad_count = torch.zeros(len(xyz), device=xyz.device, dtype=torch.int64)
@@ -17,6 +20,9 @@ class CoarseGradientImportance:
 
     @torch.no_grad()
     def update(self, gradient, visible):
+        self.steps += 1
+        if gradient is None:
+            return
         if gradient is None or gradient.shape != self.grad_sum.shape:
             raise ValueError("Coarse XYZ gradients missing or Gaussian topology changed")
         if visible.shape != self.grad_count.shape:
@@ -28,7 +34,6 @@ class CoarseGradientImportance:
         self.grad_sum[mask] += g[mask]
         self.grad_sq_sum[mask] += g[mask].square().sum(-1)
         self.grad_count[mask] += 1
-        self.steps += 1
 
     @torch.no_grad()
     def finalize(self):
@@ -47,8 +52,16 @@ class CoarseGradientImportance:
                 "deviation": deviation, "confidence": confidence, "raw_score": raw,
                 "percentile_limits": limits, "importance": importance.float(),
                 "coarse_steps": self.steps,
-                "observation_rule": "radii > 0; total loss XYZ gradient before clipping",
+                "gradient_source": self.gradient_source,
+                "observation_rule": f"radii > 0; {self.gradient_source} loss XYZ gradient before clipping",
                 "percentile_population": "all canonical Gaussians; unseen score=0"}
+
+
+def position_loss_gradient(loss: torch.Tensor, xyz: torch.Tensor):
+    """Return one loss component's XYZ gradient without touching ``xyz.grad``."""
+    if not loss.requires_grad:
+        return None
+    return torch.autograd.grad(loss, xyz, retain_graph=True, allow_unused=True)[0]
 
 
 @torch.no_grad()

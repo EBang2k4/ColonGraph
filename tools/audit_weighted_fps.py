@@ -33,11 +33,13 @@ def run(output, baseline, initial_only=False):
     bcfg.setdefault('node_sampling', 'fps')
     bcfg.setdefault('node_sampling_alpha', 1.)
     bcfg.setdefault('node_sampling_importance_reference', '')
+    bcfg.setdefault('node_sampling_gradient_source', 'total')
     cfg.setdefault('node_sampling_importance_reference', '')
+    cfg.setdefault('node_sampling_gradient_source', 'total')
     differences = {k: [bcfg.get(k), cfg.get(k)] for k in bcfg.keys() | cfg.keys()
                    if bcfg.get(k) != cfg.get(k)}
     allowed = {'model_path', 'expname', 'node_sampling', 'node_sampling_alpha',
-               'node_sampling_importance_reference'}
+               'node_sampling_importance_reference', 'node_sampling_gradient_source'}
     if cfg['iterations'] != 30000:
         allowed |= {'iterations', 'save_iterations'}
     assert not set(differences)-allowed, differences
@@ -62,6 +64,8 @@ def run(output, baseline, initial_only=False):
     assert equal_state(an['mlp'], bn['mlp']), 'Initial motion MLP or bbox buffers differ'
     s = load(output/'weighted_fps_sampling.pth')
     assert s['coarse_steps'] == 100 and s['first_node_index'] == 0 and s['alpha'] == alpha
+    gradient_source = s.get('gradient_source', 'total')
+    assert gradient_source == cfg['node_sampling_gradient_source']
     alignment = s['reference_alignment']
     assert alignment['passed']
     assert alignment['mismatched_fraction'] <= alignment['max_mismatched_fraction_allowed']
@@ -70,7 +74,7 @@ def run(output, baseline, initial_only=False):
     xyz, importance = s['canonical_xyz'], s['importance']
     assert np.array_equal(xyz.numpy(), np.stack([pa[k] for k in ('x','y','z')], axis=1))
     assert s['grad_count'].min() >= 0 and s['grad_count'].max() <= 100
-    stats = CoarseGradientImportance(xyz)
+    stats = CoarseGradientImportance(xyz, gradient_source=gradient_source)
     for key in ('grad_sum','grad_sq_sum','grad_count'):
         setattr(stats, key, s[key])
     recomputed = stats.finalize()
@@ -167,6 +171,7 @@ def run(output, baseline, initial_only=False):
 
     report = dict(config_differences=differences, initialization_except_graph_exact=True,
                   alpha=alpha, importance_reference=cfg['node_sampling_importance_reference'],
+                  gradient_source=gradient_source,
                   gradient_moments_recomputed=True, first_node_index=0, selected_nodes=2000,
                   selected_indices_reproduced=True, standard_fps_reproduces_baseline=True,
                   k4_weights_reproduced=True, fixed_graph=True,
