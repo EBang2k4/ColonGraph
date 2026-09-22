@@ -22,7 +22,9 @@ from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation, cdist
-from scene.deformation import deform_network
+from scene.deformation import (deform_network, NodeDeformationMLP,
+                               NodeConditionedResidualAppearance)
+from scene.deformation_graph import SparseDeformationGraph
 from scene.regulation import compute_plane_smoothness
 from cuvs.neighbors import ivf_flat
 
@@ -58,6 +60,23 @@ class GaussianModel:
         self.color_emb_dim = 16
         self.args.color_emb_dim = self.color_emb_dim
         self._deformation = deform_network(args)
+        self.deformation_mode = getattr(args, "deformation_mode", "original")
+        self.color_model = getattr(args, "color_model", "hexplane")
+        if self.color_model not in ("hexplane", "node_residual_mlp"):
+            raise ValueError("Full training supports color_model=hexplane or node_residual_mlp")
+        self.args.node_position_mode = getattr(args, "node_position_mode", "direct")
+        self.args.node_position_normalization = getattr(args, "node_position_normalization", "none")
+        if self.args.node_position_normalization not in ("none", "bbox", "raw_only", "pe_only"):
+            raise ValueError("node_position_normalization must be none, bbox, raw_only or pe_only")
+        if self.args.node_position_mode not in ("direct", "local_frame"):
+            raise ValueError("node_position_mode must be direct or local_frame")
+        if self.deformation_mode not in ("original", "node"):
+            raise ValueError("deformation_mode must be original or node")
+        self.deformation_graph = None
+        self.node_mlp = None
+        self.appearance_model = None
+        self.profile_deformation = False
+        self.last_deformation_forward_ms = None
         self.deformation_perc = args.deformation_perc
 
         self._deformation_table = torch.empty(0) #stores color embeddings per gaussian
@@ -75,6 +94,89 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+
+    def initialize_deformation_nodes(self, num_nodes=None, k=None):
+        if self.deformation_graph is not None:
+            raise RuntimeError("Deformation nodes are already initialized")
+        num_nodes = num_nodes or self.args.num_nodes
+        k = k or self.args.node_k
+        self.deformation_graph = SparseDeformationGraph.from_gaussians(self._xyz, num_nodes, k)
+        self.node_mlp = NodeDeformationMLP(
+            self.args.node_mlp_width, self.args.node_mlp_depth,
+            self.args.posebase_pe, self.args.timebase_pe,
+            self.args.node_position_normalization).to(self._xyz.device)
+        self.node_mlp.configure_position_normalization(self._xyz.detach())
+        print(f"Initialized deformation nodes AFTER coarse: N={len(self._xyz)}, M={num_nodes}, K={k}; fixed canonical associations")
+
+    def initialize_appearance_model(self):
+        """Create the optional fine-stage appearance branch after graph setup."""
+        if self.color_model == "hexplane":
+            return
+        if self.color_model != "node_residual_mlp":
+            raise ValueError(f"Unsupported color model: {self.color_model}")
+        if self.deformation_mode != "node" or self.deformation_graph is None:
+            raise ValueError("node_residual_mlp requires node deformation mode and an initialized graph")
+        if self.deformation_graph.gaussian_node_indices.shape[1] != 4:
+            raise ValueError("R6 requires the existing K=4 Gaussian-to-node graph")
+        if self.args.use_do or self.args.no_dcol:
+            raise ValueError("R6 requires use_do=False and no_dcol=False")
+        self.appearance_model = NodeConditionedResidualAppearance(
+            self.args, len(self.deformation_graph.node_xyz)).to(self._xyz.device)
+        print("Initialized R6 appearance: node_dim={} input=37 eta={} tanh={} seed={}".format(
+            self.args.node_appearance_dim, self.args.color_residual_scale,
+            self.args.color_residual_tanh, self.args.appearance_seed))
+
+    def _query_node_motion(self, time):
+        if self.deformation_graph is None:
+            raise RuntimeError("Initialize nodes after coarse before fine rendering")
+        if len(self._xyz) != len(self.deformation_graph.gaussian_node_indices):
+            raise RuntimeError("Fixed node associations require unchanged Gaussian topology")
+        return self.node_mlp(self.deformation_graph.node_xyz, time)
+
+    def deform_from_nodes(self, time):
+        return self.deformation_graph.blend(*self._query_node_motion(time))
+
+    def deform_geometry_from_nodes(self, time):
+        node_motion = self._query_node_motion(time)
+        dx, dr, ds = self.deformation_graph.blend(*node_motion)
+        if self.args.no_dx:
+            xyz = self._xyz
+        elif self.args.node_position_mode == "local_frame":
+            xyz = self.deformation_graph.deform_positions_local(self._xyz, node_motion[0], node_motion[1])
+        else:
+            xyz = self._xyz + dx
+        scales = self._scaling if self.args.no_ds else self._scaling + torch.clamp(
+            ds, -0.1 * self._scaling.abs(), 0.1 * self._scaling.abs())
+        rotations = self._rotation if self.args.no_dr else self._rotation + torch.clamp(
+            dr, -0.1 * self._rotation.abs(), 0.1 * self._rotation.abs())
+        # Renderer applies the existing normalize / exp / scale clamp afterwards.
+        return xyz, scales, rotations
+
+    def deform(self, points, scales, rotations, opacity, colors, time, color_embedding):
+        if self.profile_deformation:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+        if self.deformation_mode == "node":
+            xyz, scales, rotations = self.deform_geometry_from_nodes(time)
+            if self.color_model == "node_residual_mlp":
+                if self.appearance_model is None:
+                    raise RuntimeError("R6 appearance was not initialized or loaded")
+                appearance = self.appearance_model(
+                    points, time, colors, color_embedding,
+                    self.deformation_graph.gaussian_node_indices,
+                    self.deformation_graph.gaussian_node_weights)
+            else:
+                opacity, appearance = self._deformation.deformation_net.forward_color_only(
+                    points, opacity, colors, time, color_embedding)
+            result = xyz, scales, rotations, opacity, appearance
+        else:
+            result = self._deformation(points, scales, rotations, opacity, colors, time, color_embedding)
+        if self.profile_deformation:
+            end.record()
+            end.synchronize()
+            self.last_deformation_forward_ms = start.elapsed_time(end)
+        return result
 
     def capture(self):
         return (
@@ -287,13 +389,24 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         
+        if self.color_model == "node_residual_mlp" and self.appearance_model is not None:
+            # Fine-stage R6 replaces all HexPlane color parameters.  Geometry
+            # node MLP and R6 share the existing deformation LR schedule.
+            deformation_parameters = (list(self.node_mlp.parameters()) +
+                                      list(self.appearance_model.parameters()))
+            grid_parameters = []
+        else:
+            deformation_parameters = list(self._deformation.get_mlp_parameters())
+            if self.node_mlp is not None:
+                deformation_parameters.extend(self.node_mlp.parameters())
+            grid_parameters = list(self._deformation.get_grid_parameters())
+
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init*self.spatial_lr_scale, "name": "xyz"},
-            {'params': list(self._deformation.get_mlp_parameters()), 'lr': training_args.deformation_lr_init, "name": "deformation"},
+            {'params': deformation_parameters, 'lr': training_args.deformation_lr_init, "name": "deformation"},
             #{'params': list(self.region.parameters()), 'lr': training_args.region_lr, "name": "region"},  
             #{'params': list(self.spatial.parameters()), 'lr': training_args.spatial_lr, "name": "spatial"},            
                       
-            {'params': list(self._deformation.get_grid_parameters()), 'lr': training_args.grid_lr_init, "name": "grid"},
             # {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             # {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self.features], 'lr': training_args.feature_lr, "name": "f_dc"},
@@ -302,7 +415,8 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             {'params': [self._deformation_table], 'lr': training_args.feature_lr, "name": "deformation_table"}
         ]
-
+        if grid_parameters:
+            l.insert(2, {'params': grid_parameters, 'lr': training_args.grid_lr_init, "name": "grid"})
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -387,6 +501,25 @@ class GaussianModel:
 
     def load_model(self, path):
         print("loading model from exists{}".format(path))
+        node_path = os.path.join(path, "deformation_nodes.pth")
+        if os.path.exists(node_path):
+            state = torch.load(node_path, map_location="cuda", weights_only=True)
+            # Legacy B1 checkpoints always used direct translation blending.
+            self.args.node_position_mode = state["config"].get("node_position_mode", "direct")
+            self.args.node_position_normalization = state["config"].get("node_position_normalization", "none")
+            for key, value in state["config"].items():
+                setattr(self.args, key, value)
+            self.deformation_mode = "node"
+            self.color_model = state["config"].get("color_model", self.color_model)
+            graph = state["graph"]
+            self.deformation_graph = SparseDeformationGraph(
+                graph["node_xyz"], graph["gaussian_node_indices"], graph["gaussian_node_weights"])
+            self.node_mlp = NodeDeformationMLP(self.args.node_mlp_width, self.args.node_mlp_depth,
+                                              self.args.posebase_pe, self.args.timebase_pe,
+                                              self.args.node_position_normalization).cuda()
+            self.node_mlp.load_state_dict(state["mlp"])
+        elif self.deformation_mode == "node":
+            raise FileNotFoundError(f"Missing fixed graph checkpoint: {node_path}")
         
         weight_dict = torch.load(os.path.join(path,"deformation.pth"),map_location="cuda")
         self._deformation.load_state_dict(weight_dict)
@@ -401,11 +534,40 @@ class GaussianModel:
         
         if os.path.exists(os.path.join(path, "closest_point_indices.pth")):
             self.closest_point_indices = torch.load(os.path.join(path,"closest_point_indices.pth"),map_location="cuda")
+
+        appearance_path = os.path.join(path, "appearance.pth")
+        if os.path.exists(appearance_path):
+            appearance_state = torch.load(appearance_path, map_location="cuda", weights_only=True)
+            config = appearance_state["config"]
+            self.color_model = config["color_model"]
+            for key, value in config.items():
+                setattr(self.args, key, value)
+            self.initialize_appearance_model()
+            self.appearance_model.load_state_dict(appearance_state["state_dict"], strict=True)
         
 
     def save_deformation(self, path):
         torch.save(self._deformation.state_dict(),os.path.join(path, "deformation.pth"))
         torch.save(self._deformation_table,os.path.join(path, "deformation_table.pth"))
+        if self.deformation_graph is not None:
+            node_config_keys = (
+                "num_nodes", "node_k", "node_mlp_width", "node_mlp_depth",
+                "posebase_pe", "timebase_pe", "node_position_mode",
+                "node_position_normalization", "color_model",
+                "color_residual_scale", "color_residual_tanh",
+                "node_appearance_dim", "appearance_seed",
+            )
+            torch.save({"graph": self.deformation_graph.state_dict(),
+                        "mlp": self.node_mlp.state_dict(),
+                        "config": {key: getattr(self.args, key) for key in node_config_keys}},
+                       os.path.join(path, "deformation_nodes.pth"))
+        if self.appearance_model is not None:
+            appearance_config = {key: getattr(self.args, key) for key in (
+                "color_model", "color_residual_scale", "color_residual_tanh",
+                "node_appearance_dim", "appearance_seed")}
+            torch.save({"format_version": 1, "config": appearance_config,
+                        "state_dict": self.appearance_model.state_dict()},
+                       os.path.join(path, "appearance.pth"))
 
     def load_ply(self, path):
         plydata = PlyData.read(path)
@@ -740,4 +902,3 @@ class GaussianModel:
 
     def compute_regulation(self, time_smoothness_weight, l1_time_planes_weight, plane_tv_weight):
         return plane_tv_weight * self._plane_regulation() + time_smoothness_weight * self._time_regulation() + l1_time_planes_weight * self._l1_regulation()
-    

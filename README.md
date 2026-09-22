@@ -35,6 +35,29 @@ bash run.sh
 bash run_custom_ds.sh
 ```
 
+## Stable B1-bbox + R6 baseline
+
+The reproducible backup baseline is tagged `b1-bbox-r6-stable-v1`. It uses
+standard deterministic FPS, a fixed 2,000-node K=4 inverse-distance graph,
+direct node translation with bbox-normalized node-MLP coordinates, and the R6
+node-conditioned residual appearance branch (8-D node feature, 16-D Gaussian
+embedding, 13-D time encoding, `37-64-64-3`, `0.3*tanh`, multiplicative color,
+`lambda_res=0`). Weighted FPS and adaptive-node changes are intentionally not
+part of this revision.
+
+Run the matched protocol with:
+
+```bash
+bash run_joint_b1_bbox_r6.sh full c1_sigmoid2_t4_v4
+```
+
+The completed `c1_sigmoid2_t4_v4` run reached PSNR `27.4416`, SSIM `0.70838`,
+LPIPS-Alex `0.52820`, and Depth MSE `0.00210943`. Its local checkpoint remains
+at `output/joint_b1_bbox_r6/c1_sigmoid2_t4_v4/point_cloud/iteration_30000`;
+generated checkpoints and datasets are intentionally excluded from Git. See
+[`docs/joint_b1_bbox_r6_results.md`](docs/joint_b1_bbox_r6_results.md) for the
+protocol, efficiency measurements, and checkpoint audit.
+
 ## Data:  
 
 All data used in our work is available here: https://zenodo.org/records/18763383

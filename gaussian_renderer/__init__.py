@@ -85,7 +85,7 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
     if stage == "coarse" :
         means3D_final, scales_final, rotations_final, opacity_final, color_final, dcol = means3D, scales, rotations, opacity, colors_precomp, colors_precomp*0 #hack to return 0 instead of "dcol"
     else:
-        means3D_final, scales_final, rotations_final, opacity_final, (color_final, dcol) = pc._deformation(means3D, scales, 
+        means3D_final, scales_final, rotations_final, opacity_final, (color_final, dcol) = pc.deform(means3D, scales,
                                                                             rotations, opacity, colors_precomp, time, color_emb)
     
     scales_final = pc.scaling_activation(scales_final)
@@ -134,10 +134,10 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
     return {"render": rendered_image,
             "render_no_dcol": rendered_image_no_dcol,
             "depth": depth,
+            "alpha": rendered_alpha,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
             "radii": radii,
             "transformed_points": means3D_final,
             "transformed_color": color_final,
             "dcol": dcol}
-

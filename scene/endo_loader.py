@@ -422,7 +422,7 @@ class C3VD_Dataset(object):
             depth = np.load(self.depth_paths[idx])
         
         color = np.array(Image.open(self.image_paths[idx]))/255.0
-        mask = np.ones_like(depth)
+        mask = np.isfinite(depth) & (depth > 0)
         return color, depth, mask
              
     def get_pts_cam(self, depth, mask, color, disable_mask=False):

@@ -86,6 +86,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
                     mask = view.mask
                     mask_list.append(mask)
                     gt_depth = view.depth / view.depth.max()
+                    # C3VD depth maps are loaded as HxW, while the video path
+                    # below expects channel-first tensors (CxHxW).
+                    if gt_depth.ndim == 2:
+                        gt_depth = gt_depth.unsqueeze(0)
                     gt_depths.append(gt_depth)
 
     time2=time()

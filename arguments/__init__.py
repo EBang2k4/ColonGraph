@@ -78,6 +78,22 @@ class PipelineParams(ParamGroup):
 class ModelHiddenParams(ParamGroup):
     def __init__(self, parser):
         self.net_width = 64
+        self.deformation_mode = "original"
+        self.node_position_mode = "direct"
+        self.node_position_normalization = "none"
+        self.node_initialization_reference = ""
+        self.num_nodes = 2000
+        self.node_k = 4
+        self.node_mlp_width = 128
+        self.node_mlp_depth = 3
+        self.deformation_profile_interval = 100
+        # Appearance implementation used during the fine stage.  The legacy
+        # default remains HexPlane so old configs/checkpoints are unchanged.
+        self.color_model = "hexplane"
+        self.color_residual_scale = 0.1
+        self.color_residual_tanh = True
+        self.node_appearance_dim = 8
+        self.appearance_seed = 0
         self.timebase_pe = 4
         self.defor_depth = 1
         self.posebase_pe = 10
@@ -165,6 +181,9 @@ class OptimizationParams(ParamGroup):
         self.tv_weight=0.001 # we use tv only on RGB images, not on depth, depth breaks!
         self.knn_weight=0.01
         self.dcol_weight=0.005
+        # Residual-appearance regularization.  This is used only when
+        # color_model=node_residual_mlp; HexPlane continues to use dcol_weight.
+        self.lambda_res=0.005
         self.col_smooth_weight = 0.0001
 
         super().__init__(parser, "Optimization Parameters")

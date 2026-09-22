@@ -10,6 +10,9 @@
 import numpy as np
 import random
 import os
+import csv
+import json
+import time as walltime
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim, lpips_loss, TV_loss
@@ -34,6 +37,24 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+
+
+def _gradient_norm(parameters, reference):
+    total = reference.new_zeros(())
+    for parameter in parameters:
+        if parameter.grad is not None:
+            total = total + parameter.grad.detach().square().sum()
+    return total.sqrt().item()
+
+
+def _append_r6_diagnostic(model_path, row):
+    path = os.path.join(model_path, "joint_r6_diagnostics.csv")
+    exists = os.path.exists(path)
+    with open(path, "a", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(row))
+        if not exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
@@ -115,7 +136,19 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         transformed_color_list =[]
         
         for viewpoint_cam in viewpoint_cams:
+            profile_interval = hyper.deformation_profile_interval
+            gaussians.profile_deformation = stage == "fine" and profile_interval > 0 and iteration % profile_interval == 0
             render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage)
+            if gaussians.profile_deformation:
+                elapsed = gaussians.last_deformation_forward_ms
+                print(f"[PROFILE] stage={stage} iteration={iteration} deformation_forward_ms={elapsed:.4f}")
+                with open(os.path.join(scene.model_path, "deformation_profile.csv"), "a") as profile_file:
+                    if profile_file.tell() == 0:
+                        profile_file.write("iteration,deformation_forward_ms\n")
+                    profile_file.write(f"{iteration},{elapsed:.6f}\n")
+                if tb_writer:
+                    tb_writer.add_scalar("timing/deformation_forward_ms", elapsed, iteration)
+            gaussians.profile_deformation = False
             image, depth, viewspace_point_tensor, visibility_filter, radii, transformed_means, \
                 transformed_color, dcol = \
                 render_pkg["render"], render_pkg["depth"], render_pkg["viewspace_points"], \
@@ -169,12 +202,31 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         loss += Ll1
 
         ### DEPTH LOSS
+        valid_depth_mask = (
+            torch.isfinite(gt_depths)
+            & (gt_depths > 0)
+            & torch.isfinite(rendered_depths)
+        )
         if mask:
-            depth_loss = opt.depth_weight * l1_loss(torch.clamp(rendered_depths/(rendered_depths.max()+1e-6), 0, 1), \
-            torch.clamp(gt_depths/(gt_depths.max()+1e-6), 0, 1), masks, True)
+            valid_depth_mask = valid_depth_mask & (masks != 0)
+
+        if valid_depth_mask.any():
+            rendered_depth_max = rendered_depths[valid_depth_mask].max()
+            gt_depth_max = gt_depths[valid_depth_mask].max()
+            normalized_rendered_depth = torch.clamp(
+                rendered_depths / (rendered_depth_max + 1e-6), 0, 1
+            )
+            normalized_gt_depth = torch.clamp(
+                gt_depths / (gt_depth_max + 1e-6), 0, 1
+            )
+            depth_loss = opt.depth_weight * l1_loss(
+                normalized_rendered_depth,
+                normalized_gt_depth,
+                valid_depth_mask,
+                True,
+            )
         else:
-            depth_loss = opt.depth_weight * l1_loss(torch.clamp(rendered_depths/(rendered_depths.max()+1e-6), 0, 1), \
-            torch.clamp(gt_depths/(gt_depths.max()+1e-6), 0, 1))
+            depth_loss = rendered_depths.new_zeros(())
         loss +=depth_loss
 
         ## XYZ CLUSTER LOSS
@@ -190,7 +242,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         loss += loss_clusters
 
         ### MINIMIZE DCOLOR UPDATE - DCOL LOSS
-        loss_dcol = torch.mean(dcol ** 2)*opt.dcol_weight
+        residual_weight = (opt.lambda_res if gaussians.color_model == "node_residual_mlp"
+                           else opt.dcol_weight)
+        loss_dcol = torch.mean(dcol ** 2) * residual_weight
         loss += loss_dcol
 
         ### MINIMIZE DIFFERENCES BETWEEN COLORS
@@ -211,8 +265,40 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"\n❌ Loss NaN/Inf at iteration {iteration}")
+            if gaussians.deformation_mode == "node":
+                raise FloatingPointError(f"Non-finite {stage} loss at iteration {iteration}")
             
         loss.backward()
+        r6_diagnostic = None
+        if (stage == "fine" and gaussians.appearance_model is not None and
+                (iteration == 1 or iteration % max(1, hyper.deformation_profile_interval) == 0 or
+                 iteration == train_iter)):
+            app = gaussians.appearance_model
+            valid_depth_values = rendered_depths[valid_depth_mask]
+            valid_gt_depth_values = gt_depths[valid_depth_mask]
+            raw_depth_mse = ((valid_depth_values - valid_gt_depth_values).square().mean().item()
+                             if valid_depth_values.numel() else float("nan"))
+            eta = max(float(app.eta), 1e-12)
+            r6_diagnostic = {
+                "iteration": iteration,
+                "loss": loss.item(),
+                "rgb_l1": Ll1.item(),
+                "depth_loss": depth_loss.item(),
+                "raw_depth_mse": raw_depth_mse,
+                "knn_loss": loss_clusters.item(),
+                "residual_loss": loss_dcol.item(),
+                "mean_abs_delta": dcol.detach().abs().mean().item(),
+                "max_abs_delta": dcol.detach().abs().max().item(),
+                "saturation_ratio": (dcol.detach().abs() > .9 * eta).float().mean().item(),
+                "appearance_grad_norm": _gradient_norm(app.parameters(), loss),
+                "node_appearance_grad_norm": _gradient_norm([app.node_appearance], loss),
+                "embedding_grad_norm": _gradient_norm([gaussians._deformation_table], loss),
+                "node_motion_grad_norm": _gradient_norm(gaussians.node_mlp.parameters(), loss),
+                "xyz_grad_norm": _gradient_norm([gaussians._xyz], loss),
+                "transformed_xyz_finite": int(torch.isfinite(transformed_means).all().item()),
+                "depth_finite_ratio": torch.isfinite(rendered_depths).float().mean().item(),
+                "peak_vram_mb": torch.cuda.max_memory_allocated() / 2**20,
+            }
         for group in gaussians.optimizer.param_groups:
             for param in group['params']:
                 if param.grad is not None:
@@ -243,6 +329,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             timer.pause()
             metrics = {'Ll1':Ll1, 'depth_loss':depth_loss, 'elapsed':iter_start.elapsed_time(iter_end), \
                 'psnr':psnr_}
+            if r6_diagnostic is not None:
+                r6_diagnostic["iteration_ms"] = metrics["elapsed"]
+                _append_r6_diagnostic(scene.model_path, r6_diagnostic)
+                print("[R6_DIAGNOSTIC] " + json.dumps(r6_diagnostic), flush=True)
             
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, 
                             (pipe, background, 1.,))
@@ -297,24 +387,89 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
 
 def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, extra_mark):
+    if hyper.color_model == "node_residual_mlp":
+        if hyper.deformation_mode != "node":
+            raise ValueError("node_residual_mlp requires deformation_mode=node")
+        if hyper.node_k != 4:
+            raise ValueError("R6 joint training requires node_k=4")
+        if hyper.no_dcol or hyper.use_do:
+            raise ValueError("R6 joint training requires no_dcol=False and use_do=False")
+    if hyper.deformation_mode == "node":
+        if checkpoint or checkpoint_iterations:
+            raise ValueError("Node mode uses Scene.save snapshots; optimizer resume is not supported")
+        if min(opt.densify_from_iter, opt.pruning_from_iter, opt.densify_from_iter_fine,
+               opt.pruning_from_iter_fine) < min(opt.iterations, opt.densify_until_iter):
+            raise ValueError("Fixed node graph requires densification/pruning disabled as in run.sh")
     tb_writer = prepare_output_and_logger(expname)
+    training_start = walltime.monotonic()
+    torch.cuda.reset_peak_memory_stats()
     gaussians = GaussianModel(dataset.sh_degree, hyper)
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=args.no_fine)
     timer.start()
+    coarse_start = walltime.monotonic()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
                              gaussians, scene, "coarse", tb_writer, opt.coarse_iterations,timer)
+    coarse_duration = walltime.monotonic() - coarse_start
+    fine_duration = 0.0
     if not args.no_fine:
+        if hyper.deformation_mode == "node":
+            gaussians.initialize_deformation_nodes()
+            if hyper.node_initialization_reference:
+                # Reuse an UNTRAINED fine iteration_1 snapshot to control GPU
+                # coarse/FPS nondeterminism in paired normalization experiments.
+                reference = hyper.node_initialization_reference
+                if os.path.basename(os.path.normpath(reference)) != "iteration_1":
+                    raise ValueError("Initialization reference must be an untrained iteration_1 snapshot")
+                reference_config = torch.load(os.path.join(reference, "deformation_nodes.pth"),
+                                              map_location="cpu", weights_only=True)["config"]
+                for key in ("num_nodes", "node_k", "node_mlp_width", "node_mlp_depth",
+                            "posebase_pe", "timebase_pe", "node_position_mode"):
+                    expected = getattr(hyper, key)
+                    if reference_config.get(key, "direct" if key == "node_position_mode" else None) != expected:
+                        raise ValueError(f"Initialization reference config differs: {key}")
+                normalization = hyper.node_position_normalization
+                initial_mlp = {k: v.detach().clone() for k, v in gaussians.node_mlp.named_parameters()}
+                active_sh_degree = gaussians.active_sh_degree
+                cpu_rng, cuda_rng = torch.get_rng_state(), torch.cuda.get_rng_state_all()
+                gaussians.load_ply(os.path.join(reference, "point_cloud.ply"))
+                gaussians.load_model(reference)
+                torch.set_rng_state(cpu_rng)
+                torch.cuda.set_rng_state_all(cuda_rng)
+                gaussians.active_sh_degree = active_sh_degree
+                if not all(torch.equal(v, dict(gaussians.node_mlp.named_parameters())[k])
+                           for k, v in initial_mlp.items()):
+                    raise ValueError("Reference MLP differs from fresh initialization; warm-start is not allowed")
+                gaussians.args.node_position_normalization = normalization
+                gaussians.node_mlp.position_normalization = normalization
+                gaussians.node_mlp.configure_position_normalization(gaussians._xyz.detach())
+                print(f"Paired experiment: restored UNTRAINED post-coarse initialization from {reference}; RNG preserved; normalization={normalization}")
+            if hyper.color_model == "node_residual_mlp":
+                gaussians.initialize_appearance_model()
         
         opt.pruning_interval=opt.pruning_interval_fine
         opt.pruning_from_iter=opt.pruning_from_iter
         opt.densification_interval=opt.densification_interval_fine
         opt.densify_from_iter=opt.densify_from_iter_fine
+        fine_start = walltime.monotonic()
         scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                             checkpoint_iterations, checkpoint, debug_from,
                             gaussians, scene, "fine", tb_writer, opt.iterations,timer)
+        fine_duration = walltime.monotonic() - fine_start
+    summary = {
+        "color_model": hyper.color_model,
+        "coarse_iterations": opt.coarse_iterations,
+        "fine_iterations": 0 if args.no_fine else opt.iterations,
+        "coarse_duration_s": coarse_duration,
+        "fine_duration_s": fine_duration,
+        "total_training_duration_s": walltime.monotonic() - training_start,
+        "peak_vram_mb": torch.cuda.max_memory_allocated() / 2**20,
+    }
+    with open(os.path.join(scene.model_path, "training_summary.json"), "w") as stream:
+        json.dump(summary, stream, indent=2)
+        stream.write("\n")
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
