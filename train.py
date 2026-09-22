@@ -26,6 +26,9 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, ModelHiddenParams
 from utils.timer import Timer
 from utils import helper
+from utils.node_sampling import (CoarseGradientImportance, weighted_farthest_point_sampling,
+                                 build_gaussian_node_knn, validate_index_aligned_reference)
+from scene.deformation_graph import SparseDeformationGraph
 
 
 import lpips
@@ -269,6 +272,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 raise FloatingPointError(f"Non-finite {stage} loss at iteration {iteration}")
             
         loss.backward()
+        if stage == "coarse" and getattr(gaussians, "coarse_gradient_importance", None) is not None:
+            gaussians.coarse_gradient_importance.update(gaussians._xyz.grad, visibility_filter)
         r6_diagnostic = None
         if (stage == "fine" and gaussians.appearance_model is not None and
                 (iteration == 1 or iteration % max(1, hyper.deformation_profile_interval) == 0 or
@@ -387,6 +392,12 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
 
 def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, extra_mark):
+    if hyper.node_sampling not in ("fps", "weighted_fps"):
+        raise ValueError("node_sampling must be fps or weighted_fps")
+    if hyper.node_sampling == "weighted_fps" and (hyper.deformation_mode != "node" or opt.coarse_iterations != 100):
+        raise ValueError("Weighted FPS requires node mode and 100 coarse iterations")
+    if hyper.node_sampling_importance_reference and hyper.node_sampling != "weighted_fps":
+        raise ValueError("An importance reference is valid only for weighted_fps")
     if hyper.color_model == "node_residual_mlp":
         if hyper.deformation_mode != "node":
             raise ValueError("node_residual_mlp requires deformation_mode=node")
@@ -407,12 +418,34 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=args.no_fine)
+    if hyper.node_sampling == "weighted_fps" and not hyper.node_sampling_importance_reference:
+        gaussians.coarse_gradient_importance = CoarseGradientImportance(gaussians._xyz)
     timer.start()
     coarse_start = walltime.monotonic()
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
                              gaussians, scene, "coarse", tb_writer, opt.coarse_iterations,timer)
     coarse_duration = walltime.monotonic() - coarse_start
+    sampling_state = None
+    if hyper.node_sampling == "weighted_fps":
+        if hyper.node_sampling_importance_reference:
+            reference_path = hyper.node_sampling_importance_reference
+            sampling_state = torch.load(reference_path, map_location=gaussians._xyz.device,
+                                        weights_only=True)
+            required = {"grad_sum", "grad_sq_sum", "grad_count", "importance",
+                        "coarse_steps", "observed_post_coarse_xyz", "canonical_xyz"}
+            if not required.issubset(sampling_state):
+                raise ValueError(f"Incomplete Weighted FPS importance reference: {reference_path}")
+            if sampling_state["importance"].shape != (len(gaussians._xyz),):
+                raise ValueError("Importance reference Gaussian topology does not match")
+            sampling_state["current_post_coarse_xyz"] = gaussians._xyz.detach().clone()
+            sampling_state["importance_reference_path"] = reference_path
+            print(f"Weighted FPS: reusing audited coarse importance from {reference_path}", flush=True)
+        else:
+            sampling_state = gaussians.coarse_gradient_importance.finalize()
+            sampling_state["observed_post_coarse_xyz"] = gaussians._xyz.detach().clone()
+            sampling_state["importance_reference_path"] = ""
+            del gaussians.coarse_gradient_importance
     fine_duration = 0.0
     if not args.no_fine:
         if hyper.deformation_mode == "node":
@@ -446,6 +479,38 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
                 gaussians.node_mlp.position_normalization = normalization
                 gaussians.node_mlp.configure_position_normalization(gaussians._xyz.detach())
                 print(f"Paired experiment: restored UNTRAINED post-coarse initialization from {reference}; RNG preserved; normalization={normalization}")
+            if sampling_state is not None:
+                # Preserve the existing paired post-coarse initialization. The
+                # historical reference controls every Gaussian/MLP attribute;
+                # only the FPS selection and the consequent K4 graph change.
+                canonical = gaussians._xyz.detach()
+                observed = sampling_state["observed_post_coarse_xyz"]
+                if canonical.shape != observed.shape:
+                    raise ValueError("Coarse/reference Gaussian identities do not match")
+                if hyper.node_sampling_importance_reference:
+                    source_canonical = sampling_state["canonical_xyz"]
+                    if not torch.equal(source_canonical, canonical):
+                        raise ValueError("Importance reference canonical XYZ differs from paired baseline")
+                    current_alignment = validate_index_aligned_reference(
+                        sampling_state["current_post_coarse_xyz"], canonical)
+                    sampling_state["current_coarse_reference_alignment"] = current_alignment
+                if hyper.node_initialization_reference:
+                    alignment = validate_index_aligned_reference(observed, canonical)
+                    sampling_state["reference_alignment"] = alignment
+                    print("Weighted FPS reference alignment: " + json.dumps(alignment), flush=True)
+                selected = weighted_farthest_point_sampling(
+                    canonical, hyper.num_nodes, sampling_state["importance"], hyper.node_sampling_alpha)
+                nodes = canonical[selected]
+                indices, weights = build_gaussian_node_knn(canonical, nodes, hyper.node_k)
+                gaussians.deformation_graph = SparseDeformationGraph(nodes, indices, weights)
+                sampling_state.update({"selected_indices": selected, "canonical_xyz": canonical,
+                                       "alpha": hyper.node_sampling_alpha, "first_node_index": 0,
+                                       "reference_max_xyz_difference": (observed-canonical).abs().max().item()})
+                torch.save({key: value.detach().cpu() if torch.is_tensor(value) else value
+                            for key, value in sampling_state.items()},
+                           os.path.join(scene.model_path, "weighted_fps_sampling.pth"))
+                print(f"Weighted FPS: M={len(selected)} K={hyper.node_k} alpha={hyper.node_sampling_alpha}; coarse_steps={sampling_state['coarse_steps']}; fixed graph")
+                del sampling_state, observed, canonical, selected, nodes, indices, weights
             if hyper.color_model == "node_residual_mlp":
                 gaussians.initialize_appearance_model()
         
