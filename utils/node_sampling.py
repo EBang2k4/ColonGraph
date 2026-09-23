@@ -167,6 +167,49 @@ def farthest_point_sampling(xyz: torch.Tensor, num_samples: int) -> torch.LongTe
 
 
 @torch.no_grad()
+def fps_plus_importance_sampling(xyz: torch.Tensor, num_standard: int,
+                                 num_importance: int, importance: torch.Tensor,
+                                 raw_score: torch.Tensor = None) -> torch.LongTensor:
+    """Keep the complete standard-FPS basis, then append important Gaussians.
+
+    ``raw_score`` is used only to resolve the P95-clipped importance plateau.
+    Stable sorting makes index order the final deterministic tie breaker.
+    """
+    if not 0 < num_standard <= len(xyz):
+        raise ValueError("num_standard must be in [1,N]")
+    if not 0 <= num_importance <= len(xyz) - num_standard:
+        raise ValueError("num_importance must fit outside the standard set")
+    if importance.shape != (len(xyz),) or importance.device != xyz.device:
+        raise ValueError("importance must be [N] on the same device as xyz")
+    if not torch.isfinite(importance).all() or (importance < 0).any() or (importance > 1).any():
+        raise ValueError("importance must be finite in [0,1]")
+    if raw_score is None:
+        raw_score = importance
+    if raw_score.shape != importance.shape or raw_score.device != xyz.device:
+        raise ValueError("raw_score must match importance")
+    if not torch.isfinite(raw_score).all():
+        raise ValueError("raw_score must be finite")
+
+    standard = farthest_point_sampling(xyz, num_standard)
+    if num_importance == 0:
+        return standard
+    available = torch.ones(len(xyz), dtype=torch.bool, device=xyz.device)
+    available[standard] = False
+    # Stable lexicographic ordering: normalized importance first, unclipped raw
+    # score second, and Gaussian index last. The second stable sort preserves
+    # raw-score order inside equal normalized-importance groups.
+    raw_order = torch.argsort(raw_score, descending=True, stable=True)
+    # A single stable sort by importance leaves equal values in raw-score order.
+    preordered = raw_order
+    ordered_importance = importance[preordered]
+    importance_order = preordered[torch.argsort(ordered_importance, descending=True, stable=True)]
+    extra = importance_order[available[importance_order]][:num_importance]
+    if len(extra) != num_importance:
+        raise RuntimeError("Could not select the requested extra importance nodes")
+    return torch.cat((standard, extra))
+
+
+@torch.no_grad()
 def build_gaussian_node_knn(gaussian_xyz: torch.Tensor, node_xyz: torch.Tensor,
                             k: int = 4) -> tuple:
     if not 0 < k <= len(node_xyz):

@@ -3,11 +3,27 @@ import unittest
 import torch
 from utils.node_sampling import (CoarseGradientImportance, farthest_point_sampling,
                                  weighted_farthest_point_sampling,
+                                 fps_plus_importance_sampling,
                                  validate_index_aligned_reference,
                                  position_loss_gradient)
 
 
 class WeightedFPSTests(unittest.TestCase):
+    def test_standard_fps_plus_importance_preserves_base_and_adds_unique_top_scores(self):
+        xyz = torch.randn(80, 3, generator=torch.Generator().manual_seed(19))
+        importance = torch.linspace(0, 1, len(xyz))
+        raw = importance.square()
+        base = farthest_point_sampling(xyz, 20)
+        selected = fps_plus_importance_sampling(xyz, 20, 7, importance, raw)
+        self.assertTrue(torch.equal(selected[:20], base))
+        self.assertEqual(len(selected), 27)
+        self.assertEqual(len(selected.unique()), 27)
+        available = torch.ones(len(xyz), dtype=torch.bool)
+        available[base] = False
+        descending = torch.arange(len(xyz) - 1, -1, -1)
+        expected = descending[available[descending]][:7]
+        self.assertEqual(selected[20:].tolist(), expected.tolist())
+
     def test_matches_literal_euclidean_score(self):
         gen = torch.Generator().manual_seed(31)
         xyz = torch.randn(81, 3, generator=gen)

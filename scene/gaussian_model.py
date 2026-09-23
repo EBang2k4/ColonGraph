@@ -559,6 +559,7 @@ class GaussianModel:
                 "node_sampling", "node_sampling_alpha",
                 "node_sampling_importance_reference",
                 "node_sampling_gradient_source",
+                "node_importance_extra_nodes",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
                         "mlp": self.node_mlp.state_dict(),

@@ -86,6 +86,7 @@ class ModelHiddenParams(ParamGroup):
         self.node_sampling_alpha = 1.0
         self.node_sampling_importance_reference = ""
         self.node_sampling_gradient_source = "total"
+        self.node_importance_extra_nodes = 0
         self.num_nodes = 2000
         self.node_k = 4
         self.node_mlp_width = 128

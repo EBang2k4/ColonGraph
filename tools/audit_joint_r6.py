@@ -48,7 +48,7 @@ def reload_render(path, iteration, uid=144):
     return values
 
 
-def run(experiment, iteration=None):
+def run(experiment, iteration=None, expected_graph_nodes=2000):
     output = ROOT / "output" / experiment
     cfg = read_config(output / "cfg_args")
     if iteration is None:
@@ -109,7 +109,7 @@ def run(experiment, iteration=None):
                 "color_residual_tanh", "appearance_seed"):
         assert app_cfg[key] == expected[key]
     initial_state, final_state = first_app["state_dict"], final_app["state_dict"]
-    assert tuple(initial_state["node_appearance"].shape) == (2000, 8)
+    assert tuple(initial_state["node_appearance"].shape) == (expected_graph_nodes, 8)
     assert torch.count_nonzero(initial_state["residual_mlp.4.weight"]) == 0
     assert torch.count_nonzero(initial_state["residual_mlp.4.bias"]) == 0
     assert any(not torch.equal(initial_state[key], final_state[key]) for key in initial_state)
@@ -181,5 +181,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("experiment")
     parser.add_argument("--iteration", type=int)
+    parser.add_argument("--expected-graph-nodes", type=int, default=2000)
     args = parser.parse_args()
-    run(args.experiment, args.iteration)
+    run(args.experiment, args.iteration, args.expected_graph_nodes)
