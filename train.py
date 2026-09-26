@@ -31,6 +31,7 @@ from utils.node_sampling import (CoarseGradientImportance, weighted_farthest_poi
                                  build_gaussian_node_knn, validate_index_aligned_reference,
                                  position_loss_gradient)
 from scene.deformation_graph import SparseDeformationGraph
+from utils.adaptive_deformation_graph import AdaptiveNodeConfig, AdaptiveNodeManager
 
 
 import lpips
@@ -89,6 +90,30 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     first_iter += 1
     
     lpips_model = lpips.LPIPS(net="vgg").cuda()
+    adaptive_manager = None
+    if stage == "fine" and hyper.adaptive_node_mode != "none":
+        adaptive_config = AdaptiveNodeConfig(
+            mode=hyper.adaptive_node_mode,
+            start=hyper.adaptive_node_start,
+            end=hyper.adaptive_node_end,
+            interval=hyper.adaptive_node_interval,
+            max_nodes=hyper.adaptive_node_max,
+            min_nodes=hyper.adaptive_node_min,
+            max_splits=hyper.adaptive_node_max_splits,
+            max_prunes=hyper.adaptive_node_max_prunes,
+            prune_windows=hyper.adaptive_node_prune_windows,
+            prune_quantile=hyper.adaptive_node_prune_quantile,
+            score_decay=hyper.adaptive_node_score_decay,
+            running_decay=hyper.adaptive_node_running_decay,
+            split_z=hyper.adaptive_node_split_z,
+            min_coverage=hyper.adaptive_node_min_coverage,
+            min_age=hyper.adaptive_node_min_age,
+            weight_threshold=hyper.adaptive_node_weight_threshold,
+            max_split_shock_ratio=hyper.adaptive_node_max_split_shock_ratio,
+        )
+        adaptive_manager = AdaptiveNodeManager(
+            gaussians, adaptive_config, os.path.join(scene.model_path, "adaptive_nodes"))
+        gaussians.adaptive_node_manager = adaptive_manager
     video_cams = scene.getVideoCameras()
     
     if not viewpoint_stack:
@@ -278,8 +303,16 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             print(f"\n❌ Loss NaN/Inf at iteration {iteration}")
             if gaussians.deformation_mode == "node":
                 raise FloatingPointError(f"Non-finite {stage} loss at iteration {iteration}")
+
+        adaptive_render_gradient = None
+        if adaptive_manager is not None and iteration <= adaptive_manager.config.end:
+            gradients = torch.autograd.grad(
+                Ll1, transformed_means_list, retain_graph=True, allow_unused=False)
+            adaptive_render_gradient = torch.stack(gradients, dim=0).mean(dim=0).detach()
             
         loss.backward()
+        if adaptive_manager is not None and adaptive_render_gradient is not None:
+            adaptive_manager.update_statistics(adaptive_render_gradient, visibility_filter)
         if stage == "coarse" and importance_tracker is not None:
             gradient = (depth_position_gradient if importance_tracker.gradient_source == "depth"
                         else gaussians._xyz.grad)
@@ -351,7 +384,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, 
                             (pipe, background, 1.,))
-            if (iteration in saving_iterations):
+            defer_adaptive_save = (adaptive_manager is not None and
+                                   adaptive_manager.is_event(iteration))
+            if (iteration in saving_iterations) and not defer_adaptive_save:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration, stage)
             if dataset.render_process:
@@ -396,9 +431,20 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
+            if adaptive_manager is not None and adaptive_manager.is_event(iteration):
+                adaptive_manager.adapt(
+                    iteration, viewpoint_cams[0], render, pipe, background, lpips_model)
+                if iteration in saving_iterations:
+                    print("\n[ITER {}] Saving post-adaptation Gaussians".format(iteration))
+                    scene.save(iteration, stage)
+
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+    if adaptive_manager is not None:
+        adaptive_manager.save(
+            os.path.join(adaptive_manager.output_dir, "adaptive_state_final.pth"), train_iter)
 
 
 def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, extra_mark):
@@ -426,6 +472,13 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         if min(opt.densify_from_iter, opt.pruning_from_iter, opt.densify_from_iter_fine,
                opt.pruning_from_iter_fine) < min(opt.iterations, opt.densify_until_iter):
             raise ValueError("Fixed node graph requires densification/pruning disabled as in run.sh")
+    if hyper.adaptive_node_mode != "none":
+        if hyper.deformation_mode != "node" or hyper.node_sampling != "fps":
+            raise ValueError("Adaptive graph must start from the 2,000-node Standard FPS backbone")
+        if hyper.num_nodes != 2000 or hyper.node_k != 4:
+            raise ValueError("Adaptive graph requires exactly 2,000 initial nodes and K=4")
+        if hyper.color_model != "node_residual_mlp" or hyper.node_appearance_dim != 8:
+            raise ValueError("Adaptive graph experiment requires the fixed R6 8-D appearance")
     tb_writer = prepare_output_and_logger(expname)
     training_start = walltime.monotonic()
     torch.cuda.reset_peak_memory_stats()
@@ -433,6 +486,20 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     dataset.model_path = args.model_path
     timer = Timer()
     scene = Scene(dataset, gaussians, load_coarse=args.no_fine)
+    if hyper.gaussian_knn_reference:
+        knn = torch.load(hyper.gaussian_knn_reference, map_location=gaussians._xyz.device,
+                         weights_only=True)
+        if knn.shape != gaussians.closest_point_indices.shape:
+            raise ValueError("Gaussian KNN-99 reference shape does not match this scene")
+        gaussians.closest_point_indices = knn.to(
+            device=gaussians._xyz.device, dtype=gaussians.closest_point_indices.dtype)
+        print(f"Gaussian KNN-99: loaded matched reference {hyper.gaussian_knn_reference}", flush=True)
+    if hyper.gaussian_knn_save:
+        directory = os.path.dirname(hyper.gaussian_knn_save)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        torch.save(gaussians.closest_point_indices.detach().cpu(), hyper.gaussian_knn_save)
+        print(f"Gaussian KNN-99: saved matched reference {hyper.gaussian_knn_save}", flush=True)
     if importance_sampling and not hyper.node_sampling_importance_reference:
         gaussians.coarse_gradient_importance = CoarseGradientImportance(
             gaussians._xyz, hyper.node_sampling_gradient_source)
