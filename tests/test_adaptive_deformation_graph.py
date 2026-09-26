@@ -169,6 +169,46 @@ class AdaptiveDeformationGraphTests(unittest.TestCase):
             third = manager._prune_candidates(7500, stats)
             self.assertNotIn(int(second[0]), third.tolist())
 
+    def test_conservative_prune_protects_backbone_and_reports_redundancy(self):
+        with tempfile.TemporaryDirectory() as path:
+            model = _model()
+            config = _config(mode="split_prune_conservative", min_age=0,
+                             prune_windows=2, prune_quantile=0.2,
+                             prune_redundancy_distance_ratio=2.0)
+            manager = AdaptiveNodeManager(model, config, path)
+            manager._append_children([0], [torch.tensor([-0.90, 0.08, 0.0])])
+            manager._resize_appearance([0])
+            manager.birth_iterations = torch.cat(
+                (manager.birth_iterations, torch.tensor([0])))
+            manager.prune_counters = torch.cat(
+                (manager.prune_counters, torch.tensor([0])))
+            manager.gaussian_observations.fill_(10)
+            manager.gaussian_score.fill_(1)
+            stats = manager.node_statistics(5000)
+            self.assertEqual(len(manager._prune_candidates(5000, stats)), 0)
+            candidates = manager._prune_candidates(7500, stats)
+            self.assertTrue((manager.node_ids[candidates] >= 2000).all())
+            self.assertNotIn(0, manager.node_ids[candidates].tolist())
+
+            motion = torch.zeros((3, len(manager.graph.node_xyz), 3))
+            diagnostic = manager._redundancy_diagnostic(2000, motion)
+            self.assertIn("support_overlap", diagnostic)
+            self.assertIn("motion_difference", diagnostic)
+            self.assertIn("canonical_distance", diagnostic)
+
+    def test_safe_prune_preview_is_non_mutating(self):
+        with tempfile.TemporaryDirectory() as path:
+            model = _model()
+            manager = AdaptiveNodeManager(model, _config(mode="prune_once"), path)
+            old_indices = manager.graph.gaussian_node_indices.clone()
+            old_weights = manager.graph.gaussian_node_weights.clone()
+            old_nodes = manager.graph.node_xyz.clone()
+            motion = torch.zeros((len(old_nodes), 3))
+            manager._preview_prune([0], motion)
+            self.assertTrue(torch.equal(old_indices, manager.graph.gaussian_node_indices))
+            self.assertTrue(torch.equal(old_weights, manager.graph.gaussian_node_weights))
+            self.assertTrue(torch.equal(old_nodes, manager.graph.node_xyz))
+
 
 if __name__ == "__main__":
     unittest.main()

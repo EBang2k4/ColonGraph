@@ -25,6 +25,10 @@ class AdaptiveNodeConfig:
     max_prunes: int = 40
     prune_windows: int = 2
     prune_quantile: float = 0.20
+    prune_redundancy_distance_ratio: float = 1.0
+    prune_redundancy_overlap: float = 0.50
+    prune_motion_error_ratio: float = 0.01
+    prune_safe_error_ratio: float = 0.002
     score_decay: float = 0.99
     running_decay: float = 0.9
     split_z: float = 1.0
@@ -36,7 +40,8 @@ class AdaptiveNodeConfig:
     eps: float = 1e-8
 
     def validate(self):
-        if self.mode not in ("none", "stats", "split_once", "split", "prune_once", "split_prune"):
+        if self.mode not in ("none", "stats", "split_once", "split", "prune_once",
+                             "split_prune", "split_prune_conservative"):
             raise ValueError("unsupported adaptive node mode")
         if not (0 < self.start <= self.end):
             raise ValueError("invalid adaptive interval")
@@ -50,6 +55,12 @@ class AdaptiveNodeConfig:
             raise ValueError("max_split_shock_ratio must be positive")
         if self.prune_windows < 2 or not (0 < self.prune_quantile < 0.5):
             raise ValueError("pruning needs >=2 windows and a quantile in (0,0.5)")
+        if self.prune_redundancy_distance_ratio <= 0:
+            raise ValueError("prune redundancy distance ratio must be positive")
+        if not (0 < self.prune_redundancy_overlap <= 1):
+            raise ValueError("prune redundancy overlap must be in (0,1]")
+        if self.prune_motion_error_ratio <= 0 or self.prune_safe_error_ratio <= 0:
+            raise ValueError("prune motion/safe error ratios must be positive")
 
 
 def _replace_parameter_rows(optimizer, module, name, source_rows=None, keep_rows=None):
@@ -149,7 +160,7 @@ class AdaptiveNodeManager:
 
     @property
     def shock_reference_scale(self):
-        scale = getattr(self.model.node_mlp, "position_scale", None)
+        scale = getattr(getattr(self.model, "node_mlp", None), "position_scale", None)
         if scale is not None and float(scale) > 1:
             return float(scale)
         extent = self.model._xyz.detach().amax(0) - self.model._xyz.detach().amin(0)
@@ -316,6 +327,9 @@ class AdaptiveNodeManager:
             stats["coverage"][age_ok].float(), self.config.prune_quantile)
         low = age_ok & (stats["influence"] <= influence_cut) & (
             stats["coverage"].float() <= coverage_cut)
+        if self.config.mode == "split_prune_conservative":
+            # Physical IDs 0..1999 are the immutable Standard-FPS backbone.
+            low &= (self.node_ids >= 2000) & (self.parent_ids >= 0)
 
         # Protect parents and spatial neighborhoods created in the grace period.
         recent = (iteration - self.birth_iterations) < self.config.min_age
@@ -335,6 +349,77 @@ class AdaptiveNodeManager:
                 stats["coverage"][candidates].float() + 1)
             candidates = candidates[torch.argsort(usage, stable=True)]
         return candidates
+
+    @torch.no_grad()
+    def _redundancy_diagnostic(self, candidate, motion_bank):
+        """Check whether a nearby, overlapping, motion-compatible node exists."""
+        graph = self.graph
+        support = (graph.gaussian_node_indices == candidate).any(1)
+        rows = support.nonzero(as_tuple=False).flatten()
+        base = {
+            "support_size": int(len(rows)),
+            "nearest_replacement_node": None,
+            "canonical_distance": None,
+            "support_overlap": 0.0,
+            "motion_difference": None,
+            "redundancy_pass": False,
+        }
+        if not len(rows):
+            return {**base, "redundancy_reject_reason": "empty_support"}
+        replacements = torch.unique(graph.gaussian_node_indices[rows])
+        replacements = replacements[replacements != candidate]
+        if not len(replacements):
+            return {**base, "redundancy_reject_reason": "no_local_replacement"}
+
+        row_indices = graph.gaussian_node_indices[rows]
+        overlap = torch.stack([(row_indices == replacement).any(1).float().mean()
+                               for replacement in replacements])
+        distance = (graph.node_xyz[replacements] - graph.node_xyz[candidate]).norm(dim=1)
+        if motion_bank.ndim == 2:
+            motion_bank = motion_bank.unsqueeze(0)
+        motion_difference = (
+            motion_bank[:, replacements] - motion_bank[:, candidate, None, :]
+        ).norm(dim=2).amax(0)
+        support_radius = (self.model._xyz.detach()[rows] -
+                          graph.node_xyz[candidate]).norm(dim=1).median().clamp_min(1e-6)
+        distance_limit = self.config.prune_redundancy_distance_ratio * support_radius
+        motion_limit = self.config.prune_motion_error_ratio * self.shock_reference_scale
+        valid = ((overlap >= self.config.prune_redundancy_overlap) &
+                 (distance <= distance_limit) &
+                 (motion_difference <= motion_limit))
+        # Report the strongest support replacement, breaking ties by distance.
+        score = overlap - distance / distance_limit.clamp_min(1e-8) * 1e-3
+        report_index = int(torch.argmax(score))
+        result = {
+            **base,
+            "nearest_replacement_node": int(self.node_ids[replacements[report_index]]),
+            "canonical_distance": float(distance[report_index]),
+            "support_overlap": float(overlap[report_index]),
+            "motion_difference": float(motion_difference[report_index]),
+            "distance_limit": float(distance_limit),
+            "motion_limit": float(motion_limit),
+            "redundancy_pass": bool(valid.any()),
+        }
+        if valid.any():
+            valid_ids = valid.nonzero(as_tuple=False).flatten()
+            best = valid_ids[torch.argmax(score[valid_ids])]
+            result.update({
+                "nearest_replacement_node": int(self.node_ids[replacements[best]]),
+                "canonical_distance": float(distance[best]),
+                "support_overlap": float(overlap[best]),
+                "motion_difference": float(motion_difference[best]),
+                "redundancy_reject_reason": None,
+            })
+        else:
+            failures = []
+            if float(overlap.max()) < self.config.prune_redundancy_overlap:
+                failures.append("support_overlap")
+            if float(distance.min()) > float(distance_limit):
+                failures.append("canonical_distance")
+            if float(motion_difference.min()) > motion_limit:
+                failures.append("motion_difference")
+            result["redundancy_reject_reason"] = "+".join(failures) or "no_joint_match"
+        return result
 
     @torch.no_grad()
     def _preview_prune(self, prune_rows, old_node_dx):
@@ -461,7 +546,8 @@ class AdaptiveNodeManager:
         before = render_fn(camera, self.model, pipe, background, stage="fine")
         before_xyz = before["transformed_points"].detach().clone()
         before_metrics = self._metrics(before["render"].detach()[None], camera.original_image.cuda().float()[None], lpips_model)
-        split_enabled = self.config.mode in ("split_once", "split", "split_prune")
+        split_enabled = self.config.mode in (
+            "split_once", "split", "split_prune", "split_prune_conservative")
         candidates = torch.where(stats["eligible"] & (stats["normalized"] >= self.config.split_z))[0]
         if not split_enabled:
             candidates = candidates[:0]
@@ -470,6 +556,8 @@ class AdaptiveNodeManager:
         limit = min(self.config.max_splits, room)
         if self.config.mode == "split_once":
             limit = min(limit, 1)
+        if limit == 0:
+            candidates = candidates[:0]
         parents, positions, proposal_separations = [], [], []
         rejected = 0
         rejected_shock = 0
@@ -527,7 +615,12 @@ class AdaptiveNodeManager:
         pruned_node_ids = []
         prune_affected = torch.zeros_like(affected)
         prune_shock_predictions = []
-        prune_enabled = self.config.mode in ("prune_once", "split_prune")
+        prune_enabled = self.config.mode in (
+            "prune_once", "split_prune", "split_prune_conservative")
+        conservative_prune = self.config.mode == "split_prune_conservative"
+        prune_diagnostics = []
+        rejected_low_redundancy = 0
+        rejected_high_prune_error = 0
         if prune_enabled and not (self.config.mode == "prune_once" and self._single_prune_done):
             prune_stats = self.node_statistics(iteration)
             prune_candidates = self._prune_candidates(iteration, prune_stats)
@@ -536,18 +629,62 @@ class AdaptiveNodeManager:
             if self.config.mode == "prune_once":
                 prune_limit = min(prune_limit, 1)
             current_node_dx = self.model.node_mlp(self.graph.node_xyz, camera.time)[0]
+            if conservative_prune:
+                sample_times = current_node_dx.new_tensor([0.0, 0.5, 1.0])
+                motion_bank = torch.stack([
+                    self.model.node_mlp(self.graph.node_xyz, sample_time)[0]
+                    for sample_time in sample_times])
+            else:
+                motion_bank = current_node_dx
             selected = []
             prune_occupied = affected.clone()
             for candidate in prune_candidates.tolist():
+                diagnostic = {
+                    "node_id": int(self.node_ids[candidate]),
+                    "parent_id": int(self.parent_ids[candidate]),
+                    "age": int(iteration - self.birth_iterations[candidate]),
+                    "influence": float(prune_stats["influence"][candidate]),
+                    "coverage": int(prune_stats["coverage"][candidate]),
+                    "safe_prune_error": None,
+                    "safe_prune_error_mean": None,
+                    "safe_prune_error_max": None,
+                    "accepted": False,
+                    "reject_reason": None,
+                }
+                if len(selected) >= prune_limit:
+                    diagnostic["reject_reason"] = "event_limit"
+                    prune_diagnostics.append(diagnostic)
+                    continue
+                if conservative_prune:
+                    redundancy = self._redundancy_diagnostic(candidate, motion_bank)
+                    diagnostic.update(redundancy)
+                    if not redundancy["redundancy_pass"]:
+                        diagnostic["reject_reason"] = "low_redundancy"
+                        rejected_low_redundancy += 1
+                        prune_diagnostics.append(diagnostic)
+                        continue
                 candidate_affected, _, _, _, shock_mean, shock_max = self._preview_prune(
                     [candidate], current_node_dx)
-                if shock_max > shock_limit or (candidate_affected & prune_occupied).any():
+                diagnostic["safe_prune_error"] = shock_mean
+                diagnostic["safe_prune_error_mean"] = shock_mean
+                diagnostic["safe_prune_error_max"] = shock_max
+                safe_limit = ((self.config.prune_safe_error_ratio * self.shock_reference_scale)
+                              if conservative_prune else shock_limit)
+                diagnostic["safe_prune_error_limit"] = safe_limit
+                if shock_mean > safe_limit or shock_max > shock_limit:
+                    diagnostic["reject_reason"] = "high_prune_error"
+                    rejected_high_prune_error += 1
+                    prune_diagnostics.append(diagnostic)
+                    continue
+                if (candidate_affected & prune_occupied).any():
+                    diagnostic["reject_reason"] = "overlapping_affected_region"
+                    prune_diagnostics.append(diagnostic)
                     continue
                 selected.append(candidate)
                 prune_occupied |= candidate_affected
                 prune_shock_predictions.append({"mean": shock_mean, "max": shock_max})
-                if len(selected) == prune_limit:
-                    break
+                diagnostic["accepted"] = True
+                prune_diagnostics.append(diagnostic)
             if selected:
                 pruned_node_ids = [int(self.node_ids[p]) for p in selected]
                 prune_affected, _, _ = self._prune_nodes(selected, current_node_dx)
@@ -568,6 +705,11 @@ class AdaptiveNodeManager:
                  "parents": parent_node_ids, "prunes": len(pruned_node_ids),
                  "pruned_node_ids": pruned_node_ids,
                  "predicted_prune_shocks": prune_shock_predictions,
+                 "prune_candidates": len(prune_diagnostics),
+                 "prune_candidate_diagnostics": prune_diagnostics,
+                 "rejected_low_redundancy": rejected_low_redundancy,
+                 "rejected_high_prune_error": rejected_high_prune_error,
+                 "prunes_applied": len(pruned_node_ids),
                  "rejected_proposals": rejected,
                  "rejected_by_shock_or_overlap": rejected_shock,
                  "shock_reference_scale": self.shock_reference_scale,

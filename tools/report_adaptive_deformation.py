@@ -13,6 +13,7 @@ RUNS = {
     "B fixed 2000+400": "adaptive_deformation_b_fps2000_importance400_fixed",
     "C adaptive split": "adaptive_deformation_c_split_only",
     "D adaptive split+prune": "adaptive_deformation_d_split_prune",
+    "D2 conservative prune": "adaptive_deformation_d2_conservative_prune",
 }
 
 
@@ -51,6 +52,11 @@ def collect(label, tag):
                 event["changed_k4_percent"] for event in events) / len(events),
             "splits_suppressed_by_budget": sum(
                 event.get("splits_suppressed_by_budget", 0) for event in events),
+            "prune_candidates": sum(event.get("prune_candidates", 0) for event in events),
+            "rejected_low_redundancy": sum(
+                event.get("rejected_low_redundancy", 0) for event in events),
+            "rejected_high_prune_error": sum(
+                event.get("rejected_high_prune_error", 0) for event in events),
         })
     return row
 
@@ -78,7 +84,10 @@ def main():
             f"- {row['label']}: splits={row['total_splits']}, prunes={row['total_prunes']}, "
             f"mean/max shock={row['shock_mean']:.6g}/{row['shock_max']:.6g}, "
             f"mean changed K4={row['changed_k4_percent_mean']:.4f}%, "
-            f"budget-suppressed={row['splits_suppressed_by_budget']}.")
+            f"budget-suppressed={row['splits_suppressed_by_budget']}, "
+            f"prune candidates={row['prune_candidates']}, "
+            f"rejected redundancy/error={row['rejected_low_redundancy']}/"
+            f"{row['rejected_high_prune_error']}.")
     (destination / "report.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

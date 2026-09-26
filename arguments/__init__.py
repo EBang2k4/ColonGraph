@@ -99,6 +99,10 @@ class ModelHiddenParams(ParamGroup):
         self.adaptive_node_max_prunes = 40
         self.adaptive_node_prune_windows = 2
         self.adaptive_node_prune_quantile = 0.20
+        self.adaptive_node_prune_redundancy_distance_ratio = 1.0
+        self.adaptive_node_prune_redundancy_overlap = 0.50
+        self.adaptive_node_prune_motion_error_ratio = 0.01
+        self.adaptive_node_prune_safe_error_ratio = 0.002
         self.adaptive_node_score_decay = 0.99
         self.adaptive_node_running_decay = 0.9
         self.adaptive_node_split_z = 1.0

@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 source /home/ngocminh/miniconda3/etc/profile.d/conda.sh
 conda activate colonsplat
 
-stage="${1:?usage: $0 a|b|s0|s1|c|d [scene]}"
+stage="${1:?usage: $0 a|b|s0|s1|c|d|d2 [scene]}"
 scene="${2:-c1_sigmoid2_t4_v4}"
 sampling_args=()
 case "$stage" in
@@ -46,6 +46,12 @@ case "$stage" in
         adaptive_mode=split_prune
         adaptive_end=20000
         ;;
+    d2)
+        tag=adaptive_deformation_d2_conservative_prune
+        iterations=30000
+        adaptive_mode=split_prune_conservative
+        adaptive_end=20000
+        ;;
     *)
         echo "unknown stage: $stage" >&2
         exit 2
@@ -85,6 +91,10 @@ printf '%s RUNNING %s\n' "$(date --iso-8601=seconds)" "$current" | tee "${log_di
     --adaptive_node_interval 2500 --adaptive_node_max 2400 --adaptive_node_min 1600 \
     --adaptive_node_max_splits 60 --adaptive_node_max_prunes 40 \
     --adaptive_node_prune_windows 2 --adaptive_node_prune_quantile 0.20 \
+    --adaptive_node_prune_redundancy_distance_ratio 1.0 \
+    --adaptive_node_prune_redundancy_overlap 0.50 \
+    --adaptive_node_prune_motion_error_ratio 0.01 \
+    --adaptive_node_prune_safe_error_ratio 0.002 \
     --adaptive_node_score_decay 0.99 \
     --adaptive_node_running_decay 0.9 --adaptive_node_split_z 1.0 \
     --adaptive_node_min_coverage 32 --adaptive_node_min_age 5000 \

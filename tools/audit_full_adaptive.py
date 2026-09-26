@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path", type=Path)
     parser.add_argument("--iteration", type=int, default=30000)
-    parser.add_argument("--branch", choices=("c", "d"), required=True)
+    parser.add_argument("--branch", choices=("c", "d", "d2"), required=True)
     args = parser.parse_args()
     adaptive = args.model_path / "adaptive_nodes"
     events = [json.loads(line) for line in
@@ -62,10 +62,30 @@ def main():
     if args.branch == "c":
         checks["split_only"] = all(event.get("prunes", 0) == 0 for event in events)
         checks["grew_from_2000"] = len(state["node_xyz"]) > 2000
-    else:
+    elif args.branch == "d":
         checks["split_and_prune_exercised"] = (
             sum(event.get("splits", 0) for event in events) > 0 and
             sum(event.get("prunes", 0) for event in events) > 0)
+    else:
+        diagnostics = [diagnostic for event in events
+                       for diagnostic in event.get("prune_candidate_diagnostics", [])]
+        accepted = [diagnostic for diagnostic in diagnostics if diagnostic["accepted"]]
+        checks.update({
+            "split_exercised": sum(event.get("splits", 0) for event in events) > 0,
+            "conservative_diagnostics_present": len(diagnostics) > 0,
+            "backbone_2000_preserved": torch.equal(
+                torch.sort(state["node_ids"][state["node_ids"] < 2000]).values,
+                torch.arange(2000)),
+            "child_only_candidates": all(
+                diagnostic["node_id"] >= 2000 and diagnostic["parent_id"] >= 0
+                for diagnostic in diagnostics),
+            "accepted_redundant_and_safe": all(
+                diagnostic.get("redundancy_pass", False) and
+                diagnostic["safe_prune_error"] <= diagnostic["safe_prune_error_limit"]
+                for diagnostic in accepted),
+            "prune_count_matches_diagnostics": sum(
+                event.get("prunes", 0) for event in events) == len(accepted),
+        })
 
     model, scene, pipe, background, _ = load_scene(args.model_path, args.iteration)
     camera = scene.getTestCameras()[0]
@@ -91,6 +111,12 @@ def main():
         "mean_changed_k4_percent": sum(event["changed_k4_percent"] for event in events) / len(events),
         "total_splits_suppressed_by_budget": sum(
             event.get("splits_suppressed_by_budget", 0) for event in events),
+        "total_prune_candidates": sum(event.get("prune_candidates", 0) for event in events),
+        "total_prunes": sum(event.get("prunes", 0) for event in events),
+        "rejected_low_redundancy": sum(
+            event.get("rejected_low_redundancy", 0) for event in events),
+        "rejected_high_prune_error": sum(
+            event.get("rejected_high_prune_error", 0) for event in events),
         "reload_max_abs_render_error": reload_error,
     }
     output = adaptive / f"{args.branch}_full_audit.json"
