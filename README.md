@@ -58,6 +58,19 @@ generated checkpoints and datasets are intentionally excluded from Git. See
 [`docs/joint_b1_bbox_r6_results.md`](docs/joint_b1_bbox_r6_results.md) for the
 protocol, efficiency measurements, and checkpoint audit.
 
+## Weighted-FPS 2,000 + 400 baseline
+
+This branch adds a fixed-budget geometry variant that preserves all 2,000
+Standard-FPS coverage nodes and appends 400 total-gradient importance nodes.
+The graph is fixed at K=4 and geometry, shared node deformation, and R6
+appearance are trained jointly for 30k fine iterations after 100 coarse
+iterations. The best completed run reached PSNR `27.45388`, SSIM `0.70893`,
+LPIPS-Alex `0.52434`, and Depth MSE `0.00164310`.
+
+Run it with `bash run_fps_plus_importance.sh`. See
+[`docs/weighted_fps_2000_plus_400_baseline.md`](docs/weighted_fps_2000_plus_400_baseline.md)
+for the exact protocol, local artifact paths, audits, and reproducibility note.
+
 ## Data:  
 
 All data used in our work is available here: https://zenodo.org/records/18763383

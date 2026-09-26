@@ -55,7 +55,8 @@ train_run() {
         --node_sampling_importance_reference "$importance_reference" \
         --node_sampling_gradient_source total \
         --color_model node_residual_mlp --node_appearance_dim 8 \
-        --color_residual_scale 0.3 --appearance_seed 0 --lambda_res 0 \
+        --color_residual_scale 0.3 --appearance_conditioning time \
+        --appearance_seed 0 --lambda_res 0 \
         --coarse_iterations 100 --iterations "$steps" \
         --depth_weight 0.25 --knn_weight 0.01 --dcol_weight 0.005 \
         --col_smooth_weight 0.0001 --tv_weight 0.001 \

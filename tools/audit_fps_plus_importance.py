@@ -58,6 +58,9 @@ def run(output, baseline, initial_only=False):
         "node_sampling": "fps", "node_sampling_alpha": 1.,
         "node_sampling_importance_reference": "",
         "node_sampling_gradient_source": "total", "node_importance_extra_nodes": 0,
+        # Older R6 snapshots predate this serialized option. Its runtime
+        # fallback was already time conditioning, so these are equivalent.
+        "appearance_conditioning": "time",
     }
     for key, value in defaults.items():
         cfg.setdefault(key, value)
@@ -87,7 +90,10 @@ def run(output, baseline, initial_only=False):
     assert equal_state(nodes["mlp"], base_nodes["mlp"]), "Motion MLP initialization changed"
     app = load(first / "appearance.pth")
     base_app = load(base_first / "appearance.pth")
-    assert app["config"] == base_app["config"]
+    app_config, base_app_config = dict(app["config"]), dict(base_app["config"])
+    app_config.setdefault("appearance_conditioning", "time")
+    base_app_config.setdefault("appearance_conditioning", "time")
+    assert app_config == base_app_config
     for key in app["state_dict"]:
         if key == "node_appearance":
             assert app["state_dict"][key].shape == (2400, 8)
