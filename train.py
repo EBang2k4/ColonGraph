@@ -97,6 +97,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             start=hyper.adaptive_node_start,
             end=hyper.adaptive_node_end,
             interval=hyper.adaptive_node_interval,
+            split_end=hyper.adaptive_node_split_end,
+            prune_start=hyper.adaptive_node_prune_start,
             max_nodes=hyper.adaptive_node_max,
             min_nodes=hyper.adaptive_node_min,
             max_splits=hyper.adaptive_node_max_splits,
@@ -441,6 +443,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 if iteration in saving_iterations:
                     print("\n[ITER {}] Saving post-adaptation Gaussians".format(iteration))
                     scene.save(iteration, stage)
+
+            if adaptive_manager is not None:
+                adaptive_manager.record_motion_diagnostics(iteration)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

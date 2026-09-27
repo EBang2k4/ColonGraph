@@ -19,6 +19,8 @@ class AdaptiveNodeConfig:
     start: int = 5000
     end: int = 20000
     interval: int = 2500
+    split_end: int = 20000
+    prune_start: int = 22500
     max_nodes: int = 2400
     min_nodes: int = 1600
     max_splits: int = 60
@@ -41,7 +43,8 @@ class AdaptiveNodeConfig:
 
     def validate(self):
         if self.mode not in ("none", "stats", "split_once", "split", "prune_once",
-                             "split_prune", "split_prune_conservative"):
+                             "split_prune", "split_prune_conservative",
+                             "split_prune_late"):
             raise ValueError("unsupported adaptive node mode")
         if not (0 < self.start <= self.end):
             raise ValueError("invalid adaptive interval")
@@ -61,6 +64,9 @@ class AdaptiveNodeConfig:
             raise ValueError("prune redundancy overlap must be in (0,1]")
         if self.prune_motion_error_ratio <= 0 or self.prune_safe_error_ratio <= 0:
             raise ValueError("prune motion/safe error ratios must be positive")
+        if self.mode == "split_prune_late" and not (
+                self.start <= self.split_end < self.prune_start <= self.end):
+            raise ValueError("late prune requires start <= split_end < prune_start <= end")
 
 
 def _replace_parameter_rows(optimizer, module, name, source_rows=None, keep_rows=None):
@@ -153,6 +159,11 @@ class AdaptiveNodeManager:
         self._single_split_done = False
         self._single_prune_done = False
         self.log_path = os.path.join(output_dir, "adaptive_events.jsonl")
+        self.motion_log_path = os.path.join(output_dir, "parent_child_motion.jsonl")
+        self.split_pairs = []
+        self.motion_diagnostics = []
+        self.motion_diagnostic_offsets = (500, 1000, 2500)
+        self.motion_diagnostic_times = (0.0, 0.25, 0.5, 0.75, 1.0)
 
     @property
     def graph(self):
@@ -314,6 +325,78 @@ class AdaptiveNodeManager:
         _replace_parameter_rows(self.model.optimizer, self.model.appearance_model,
                                 "node_appearance", source_rows=parents)
 
+    def _record_split_pairs(self, iteration, parents, positions):
+        """Persist canonical parent-child separation at the split event."""
+        if not parents:
+            return []
+        child_ids = self.node_ids[-len(parents):]
+        records = []
+        for parent_row, child_id, child_xyz in zip(parents, child_ids, positions):
+            parent_id = int(self.parent_ids[-len(parents) + len(records)])
+            parent_xyz = self.graph.node_xyz[parent_row].detach()
+            record = {
+                "parent_id": parent_id,
+                "child_id": int(child_id),
+                "birth_iteration": int(iteration),
+                "parent_xyz": parent_xyz.cpu().tolist(),
+                "child_xyz": child_xyz.detach().cpu().tolist(),
+                "d_pos": float((child_xyz - parent_xyz).norm()),
+            }
+            self.split_pairs.append(record)
+            records.append(record)
+        return records
+
+    @torch.no_grad()
+    def record_motion_diagnostics(self, iteration):
+        """Measure learned parent-child motion separation at fixed offsets.
+
+        Physical node IDs make this robust to row compaction after a late
+        prune. Missing pairs are reported explicitly instead of silently
+        measuring the wrong rows.
+        """
+        due = [pair for pair in self.split_pairs
+               if iteration - pair["birth_iteration"] in self.motion_diagnostic_offsets and
+               not any(item["child_id"] == pair["child_id"] and
+                       item["iteration"] == iteration for item in self.motion_diagnostics)]
+        if not due:
+            return []
+        row_by_id = {int(node_id): row for row, node_id in enumerate(self.node_ids.tolist())}
+        sample_times = self.graph.node_xyz.new_tensor(self.motion_diagnostic_times)
+        motion_bank = torch.stack([
+            self.model.node_mlp(self.graph.node_xyz, time)[0] for time in sample_times])
+        records = []
+        for pair in due:
+            parent_row = row_by_id.get(pair["parent_id"])
+            child_row = row_by_id.get(pair["child_id"])
+            if parent_row is None or child_row is None:
+                record = {**pair, "iteration": int(iteration),
+                          "offset": int(iteration - pair["birth_iteration"]),
+                          "available": False, "reason": "parent_or_child_pruned"}
+            else:
+                difference = (motion_bank[:, child_row] -
+                              motion_bank[:, parent_row]).norm(dim=1)
+                record = {
+                    **pair,
+                    "iteration": int(iteration),
+                    "offset": int(iteration - pair["birth_iteration"]),
+                    "available": True,
+                    "sample_times": list(self.motion_diagnostic_times),
+                    "d_motion": difference.cpu().tolist(),
+                    "d_motion_mean": float(difference.mean()),
+                    "d_motion_p95": float(torch.quantile(difference, 0.95)),
+                    "d_motion_max": float(difference.max()),
+                }
+            self.motion_diagnostics.append(record)
+            records.append(record)
+            with open(self.motion_log_path, "a") as stream:
+                stream.write(json.dumps(record) + "\n")
+        if records:
+            print("[PARENT_CHILD_MOTION] " + json.dumps({
+                "iteration": int(iteration), "pairs": len(records),
+                "available": sum(record["available"] for record in records),
+            }), flush=True)
+        return records
+
     @torch.no_grad()
     def _prune_candidates(self, iteration, stats):
         """Find nodes whose usage stayed low for multiple adaptation windows."""
@@ -327,7 +410,7 @@ class AdaptiveNodeManager:
             stats["coverage"][age_ok].float(), self.config.prune_quantile)
         low = age_ok & (stats["influence"] <= influence_cut) & (
             stats["coverage"].float() <= coverage_cut)
-        if self.config.mode == "split_prune_conservative":
+        if self.config.mode in ("split_prune_conservative", "split_prune_late"):
             # Physical IDs 0..1999 are the immutable Standard-FPS backbone.
             low &= (self.node_ids >= 2000) & (self.parent_ids >= 0)
 
@@ -547,7 +630,9 @@ class AdaptiveNodeManager:
         before_xyz = before["transformed_points"].detach().clone()
         before_metrics = self._metrics(before["render"].detach()[None], camera.original_image.cuda().float()[None], lpips_model)
         split_enabled = self.config.mode in (
-            "split_once", "split", "split_prune", "split_prune_conservative")
+            "split_once", "split", "split_prune", "split_prune_conservative") or (
+                self.config.mode == "split_prune_late" and
+                iteration <= self.config.split_end)
         candidates = torch.where(stats["eligible"] & (stats["normalized"] >= self.config.split_z))[0]
         if not split_enabled:
             candidates = candidates[:0]
@@ -609,15 +694,20 @@ class AdaptiveNodeManager:
             self.birth_iterations = torch.cat((self.birth_iterations, births))
             self.prune_counters = torch.cat((self.prune_counters, torch.zeros_like(births)))
             self._single_split_done = True
+            split_pair_records = self._record_split_pairs(iteration, parents, positions)
         else:
             affected = torch.zeros(len(self.model._xyz), device=self.model._xyz.device, dtype=torch.bool)
             old_ids = self.node_ids[self.graph.gaussian_node_indices]
+            split_pair_records = []
         pruned_node_ids = []
         prune_affected = torch.zeros_like(affected)
         prune_shock_predictions = []
         prune_enabled = self.config.mode in (
-            "prune_once", "split_prune", "split_prune_conservative")
-        conservative_prune = self.config.mode == "split_prune_conservative"
+            "prune_once", "split_prune", "split_prune_conservative") or (
+                self.config.mode == "split_prune_late" and
+                self.config.prune_start <= iteration <= self.config.end)
+        conservative_prune = self.config.mode in (
+            "split_prune_conservative", "split_prune_late")
         prune_diagnostics = []
         rejected_low_redundancy = 0
         rejected_high_prune_error = 0
@@ -717,6 +807,7 @@ class AdaptiveNodeManager:
                  "rejected_shock_max_distribution": self._distribution(
                      torch.as_tensor(rejected_shock_maxima, device=self.model._xyz.device)),
                  "predicted_split_shocks": predicted_shocks,
+                 "parent_child_splits": split_pair_records,
                  "selected_parent_statistics": selected_parent_statistics,
                  "splits_suppressed_by_budget": suppressed,
                  "affected_percent": 100 * float(affected.float().mean()),
@@ -748,6 +839,8 @@ class AdaptiveNodeManager:
                     running_log_mean=None if self.running_log_mean is None else self.running_log_mean.detach().cpu(),
                     running_log_var=None if self.running_log_var is None else self.running_log_var.detach().cpu(),
                     next_node_id=self.next_node_id, events=self.events,
+                    split_pairs=self.split_pairs,
+                    motion_diagnostics=self.motion_diagnostics,
                     single_split_done=self._single_split_done,
                     single_prune_done=self._single_prune_done,
                     node_appearance=self.model.appearance_model.node_appearance.detach().cpu(),
@@ -791,6 +884,8 @@ class AdaptiveNodeManager:
                                 else state["running_log_var"].to(device))
         self.next_node_id = int(state["next_node_id"])
         self.events = list(state["events"])
+        self.split_pairs = list(state.get("split_pairs", []))
+        self.motion_diagnostics = list(state.get("motion_diagnostics", []))
         self._single_split_done = bool(state.get("single_split_done", False))
         self._single_prune_done = bool(state.get("single_prune_done", False))
         expected = len(nodes)

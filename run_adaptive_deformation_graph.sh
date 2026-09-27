@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 source /home/ngocminh/miniconda3/etc/profile.d/conda.sh
 conda activate colonsplat
 
-stage="${1:?usage: $0 a|b|s0|s1|c|d|d2 [scene]}"
+stage="${1:?usage: $0 a|b|s0|s1|c|cdiag|d|d2|d3 [scene]}"
 scene="${2:-c1_sigmoid2_t4_v4}"
 sampling_args=()
 case "$stage" in
@@ -40,6 +40,12 @@ case "$stage" in
         adaptive_mode=split
         adaptive_end=20000
         ;;
+    cdiag)
+        tag=adaptive_deformation_c_split_mechanism
+        iterations=30000
+        adaptive_mode=split
+        adaptive_end=20000
+        ;;
     d)
         tag=adaptive_deformation_d_split_prune
         iterations=30000
@@ -51,6 +57,12 @@ case "$stage" in
         iterations=30000
         adaptive_mode=split_prune_conservative
         adaptive_end=20000
+        ;;
+    d3)
+        tag=adaptive_deformation_d3_prune_late
+        iterations=30000
+        adaptive_mode=split_prune_late
+        adaptive_end=25000
         ;;
     *)
         echo "unknown stage: $stage" >&2
@@ -89,6 +101,7 @@ printf '%s RUNNING %s\n' "$(date --iso-8601=seconds)" "$current" | tee "${log_di
     --adaptive_node_mode "$adaptive_mode" \
     --adaptive_node_start 5000 --adaptive_node_end "$adaptive_end" \
     --adaptive_node_interval 2500 --adaptive_node_max 2400 --adaptive_node_min 1600 \
+    --adaptive_node_split_end 20000 --adaptive_node_prune_start 22500 \
     --adaptive_node_max_splits 60 --adaptive_node_max_prunes 40 \
     --adaptive_node_prune_windows 2 --adaptive_node_prune_quantile 0.20 \
     --adaptive_node_prune_redundancy_distance_ratio 1.0 \
@@ -99,7 +112,7 @@ printf '%s RUNNING %s\n' "$(date --iso-8601=seconds)" "$current" | tee "${log_di
     --adaptive_node_running_decay 0.9 --adaptive_node_split_z 1.0 \
     --adaptive_node_min_coverage 32 --adaptive_node_min_age 5000 \
     --adaptive_node_weight_threshold 0.05 --adaptive_node_max_split_shock_ratio 0.01 \
-    --save_iterations 1 5000 7500 10000 12500 15000 17500 20000
+    --save_iterations 1 5000 7500 10000 12500 15000 17500 20000 22500 25000
 printf '%s COMPLETED %s\n' "$(date --iso-8601=seconds)" "$current" | tee "${log_dir}/status.txt"
 
 printf '%s PIPELINE_COMPLETED\n' "$(date --iso-8601=seconds)" | tee "${log_dir}/status.txt"

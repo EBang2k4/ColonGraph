@@ -93,6 +93,8 @@ class ModelHiddenParams(ParamGroup):
         self.adaptive_node_start = 5000
         self.adaptive_node_end = 20000
         self.adaptive_node_interval = 2500
+        self.adaptive_node_split_end = 20000
+        self.adaptive_node_prune_start = 22500
         self.adaptive_node_max = 2400
         self.adaptive_node_min = 1600
         self.adaptive_node_max_splits = 60

@@ -13,13 +13,15 @@ from tools.experiment_common import load_scene
 
 
 SCHEDULE = [5000, 7500, 10000, 12500, 15000, 17500, 20000]
+LATE_SCHEDULE = SCHEDULE + [22500, 25000]
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path", type=Path)
     parser.add_argument("--iteration", type=int, default=30000)
-    parser.add_argument("--branch", choices=("c", "d", "d2"), required=True)
+    parser.add_argument("--branch", choices=("c", "d", "d2", "d3"), required=True)
+    parser.add_argument("--mechanism-diagnostic", action="store_true")
     args = parser.parse_args()
     adaptive = args.model_path / "adaptive_nodes"
     events = [json.loads(line) for line in
@@ -34,7 +36,8 @@ def main():
                             weights_only=True)
     graph = node_snapshot["graph"]
     checks = {
-        "schedule_exact": [event["iteration"] for event in events] == SCHEDULE,
+        "schedule_exact": [event["iteration"] for event in events] == (
+            LATE_SCHEDULE if args.branch == "d3" else SCHEDULE),
         "node_budget": 1600 <= len(state["node_xyz"]) <= 2400,
         "graph_xyz_exact": torch.equal(state["node_xyz"], graph["node_xyz"]),
         "graph_indices_exact": torch.equal(
@@ -86,6 +89,36 @@ def main():
             "prune_count_matches_diagnostics": sum(
                 event.get("prunes", 0) for event in events) == len(accepted),
         })
+        if args.branch == "d3":
+            checks.update({
+                "split_only_through_20k": all(
+                    event.get("prunes", 0) == 0 for event in events
+                    if event["iteration"] <= 20000),
+                "prune_only_after_22_5k": all(
+                    event.get("splits", 0) == 0 for event in events
+                    if event["iteration"] >= 22500),
+                "late_prune_events_exact": [
+                    event["iteration"] for event in events
+                    if event["iteration"] >= 22500] == [22500, 25000],
+            })
+
+    if args.mechanism_diagnostic:
+        pairs = state.get("split_pairs", [])
+        motion = state.get("motion_diagnostics", [])
+        available = [item for item in motion if item.get("available", False)]
+        observed = {(item["child_id"], item["offset"]) for item in available}
+        expected = {(pair["child_id"], offset) for pair in pairs
+                    for offset in (500, 1000, 2500)}
+        checks.update({
+            "split_pairs_recorded": len(pairs) == sum(
+                event.get("splits", 0) for event in events),
+            "positive_parent_child_separation": bool(pairs) and all(
+                pair["d_pos"] > 0 for pair in pairs),
+            "motion_offsets_complete": observed == expected,
+            "motion_is_finite": bool(available) and all(
+                torch.isfinite(torch.tensor(item["d_motion"])).all().item()
+                for item in available),
+        })
 
     model, scene, pipe, background, _ = load_scene(args.model_path, args.iteration)
     camera = scene.getTestCameras()[0]
@@ -118,6 +151,8 @@ def main():
         "rejected_high_prune_error": sum(
             event.get("rejected_high_prune_error", 0) for event in events),
         "reload_max_abs_render_error": reload_error,
+        "split_pairs": len(state.get("split_pairs", [])),
+        "motion_diagnostic_records": len(state.get("motion_diagnostics", [])),
     }
     output = adaptive / f"{args.branch}_full_audit.json"
     output.write_text(json.dumps(report, indent=2) + "\n")

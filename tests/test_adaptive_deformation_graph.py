@@ -19,6 +19,12 @@ class _Appearance(nn.Module):
         return (self.node_appearance[indices] * weights.unsqueeze(-1)).sum(1)
 
 
+class _NodeMLP(nn.Module):
+    def forward(self, xyz, time):
+        scale = 1 + torch.as_tensor(time, device=xyz.device, dtype=xyz.dtype)
+        return xyz * scale, None, None
+
+
 def _model():
     node_xyz = torch.stack((torch.linspace(-1, 1, 2000),
                             torch.zeros(2000), torch.zeros(2000)), dim=1)
@@ -37,6 +43,7 @@ def _model():
         _xyz=nn.Parameter(xyz.clone()),
         deformation_graph=SparseDeformationGraph(node_xyz, indices, weights),
         appearance_model=appearance,
+        node_mlp=_NodeMLP(),
         optimizer=optimizer,
     )
     # Materialize Adam moments so resizing behavior is exercised.
@@ -208,6 +215,35 @@ class AdaptiveDeformationGraphTests(unittest.TestCase):
             self.assertTrue(torch.equal(old_indices, manager.graph.gaussian_node_indices))
             self.assertTrue(torch.equal(old_weights, manager.graph.gaussian_node_weights))
             self.assertTrue(torch.equal(old_nodes, manager.graph.node_xyz))
+
+    def test_parent_child_motion_is_logged_at_requested_offsets(self):
+        with tempfile.TemporaryDirectory() as path:
+            model = _model()
+            manager = AdaptiveNodeManager(model, _config(), path)
+            position = torch.tensor([-0.90, 0.08, 0.0])
+            manager._append_children([0], [position])
+            manager._resize_appearance([0])
+            manager.birth_iterations = torch.cat(
+                (manager.birth_iterations, torch.tensor([5000])))
+            manager.prune_counters = torch.cat(
+                (manager.prune_counters, torch.tensor([0])))
+            pairs = manager._record_split_pairs(5000, [0], [position])
+            self.assertEqual(len(pairs), 1)
+            self.assertGreater(pairs[0]["d_pos"], 0)
+            self.assertEqual(manager.record_motion_diagnostics(5499), [])
+            records = manager.record_motion_diagnostics(5500)
+            self.assertEqual(len(records), 1)
+            self.assertTrue(records[0]["available"])
+            self.assertGreater(records[0]["d_motion_mean"], 0)
+            self.assertEqual(records[0]["offset"], 500)
+
+    def test_split_prune_late_schedule_is_validated(self):
+        config = _config(mode="split_prune_late", start=5000, end=25000,
+                         split_end=20000, prune_start=22500)
+        config.validate()
+        with self.assertRaises(ValueError):
+            _config(mode="split_prune_late", start=5000, end=25000,
+                    split_end=22500, prune_start=22500).validate()
 
 
 if __name__ == "__main__":
