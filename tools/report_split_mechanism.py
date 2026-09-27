@@ -48,7 +48,7 @@ def main():
         "d_pos": distribution([pair["d_pos"] for pair in pairs]),
         "motion_by_offset": by_offset,
         "interpretation": (
-            "A non-zero and increasing parent-child motion difference shows that the "
+            "A non-zero, persistent parent-child motion difference shows that the "
             "new interpolation sample is not a forward duplicate of its parent. Because "
             "the node MLP is shared, this is spatially distinct output from the shared "
             "field, not an independent per-node motion parameter."),
