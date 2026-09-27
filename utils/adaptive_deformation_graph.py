@@ -334,6 +334,10 @@ class AdaptiveNodeManager:
         for parent_row, child_id, child_xyz in zip(parents, child_ids, positions):
             parent_id = int(self.parent_ids[-len(parents) + len(records)])
             parent_xyz = self.graph.node_xyz[parent_row].detach()
+            child_row = len(self.graph.node_xyz) - len(parents) + len(records)
+            appearance_distance = (
+                self.model.appearance_model.node_appearance[child_row] -
+                self.model.appearance_model.node_appearance[parent_row]).detach().norm()
             record = {
                 "parent_id": parent_id,
                 "child_id": int(child_id),
@@ -341,6 +345,7 @@ class AdaptiveNodeManager:
                 "parent_xyz": parent_xyz.cpu().tolist(),
                 "child_xyz": child_xyz.detach().cpu().tolist(),
                 "d_pos": float((child_xyz - parent_xyz).norm()),
+                "d_appearance_at_split": float(appearance_distance),
             }
             self.split_pairs.append(record)
             records.append(record)
@@ -375,6 +380,9 @@ class AdaptiveNodeManager:
             else:
                 difference = (motion_bank[:, child_row] -
                               motion_bank[:, parent_row]).norm(dim=1)
+                appearance_difference = (
+                    self.model.appearance_model.node_appearance[child_row] -
+                    self.model.appearance_model.node_appearance[parent_row]).detach()
                 record = {
                     **pair,
                     "iteration": int(iteration),
@@ -385,6 +393,9 @@ class AdaptiveNodeManager:
                     "d_motion_mean": float(difference.mean()),
                     "d_motion_p95": float(torch.quantile(difference, 0.95)),
                     "d_motion_max": float(difference.max()),
+                    "d_appearance": float(appearance_difference.norm()),
+                    "d_appearance_abs_mean": float(appearance_difference.abs().mean()),
+                    "d_appearance_abs_max": float(appearance_difference.abs().max()),
                 }
             self.motion_diagnostics.append(record)
             records.append(record)

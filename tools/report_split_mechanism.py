@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,6 +27,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path", type=Path)
     parser.add_argument("--iteration", type=int, default=30000)
+    parser.add_argument("--baseline-model-path", type=Path)
     args = parser.parse_args()
     adaptive = args.model_path / "adaptive_nodes"
     state = torch.load(adaptive / "adaptive_state_final.pth", map_location="cpu",
@@ -39,13 +41,19 @@ def main():
         values = [item["d_motion_mean"] for item in records]
         by_offset[str(offset)] = {
             "d_motion_mean": distribution(values),
+            "d_appearance": distribution(
+                [item["d_appearance"] for item in records]),
             "nonzero_fraction_gt_1e-6": (None if not values else
                 float(np.mean(np.asarray(values) > 1e-6))),
+            "appearance_nonzero_fraction_gt_1e-8": (None if not records else
+                float(np.mean(np.asarray([item["d_appearance"] for item in records]) > 1e-8))),
             "pairs": len(records),
         }
     report = {
         "pairs": len(pairs),
         "d_pos": distribution([pair["d_pos"] for pair in pairs]),
+        "d_appearance_at_split": distribution(
+            [pair["d_appearance_at_split"] for pair in pairs]),
         "motion_by_offset": by_offset,
         "interpretation": (
             "A non-zero, persistent parent-child motion difference shows that the "
@@ -53,6 +61,44 @@ def main():
             "the node MLP is shared, this is spatially distinct output from the shared "
             "field, not an independent per-node motion parameter."),
     }
+    current_cfg = (args.model_path / "cfg_args").read_text()
+    current_eta = re.search(r"color_residual_scale=([^,)]*)", current_cfg)
+    report["configuration"] = {
+        "split_only_color_residual_scale": (
+            None if current_eta is None else float(current_eta.group(1))),
+    }
+    current_summary_path = args.model_path / "training_summary.json"
+    if current_summary_path.exists():
+        current_summary = json.loads(current_summary_path.read_text())
+        timing = {
+            "split_only_total_s": current_summary["total_training_duration_s"],
+            "split_only_fine_s": current_summary["fine_duration_s"],
+            "split_only_peak_vram_mb": current_summary["peak_vram_mb"],
+        }
+        if args.baseline_model_path:
+            baseline_summary = json.loads(
+                (args.baseline_model_path / "training_summary.json").read_text())
+            timing.update({
+                "baseline_path": str(args.baseline_model_path),
+                "baseline_total_s": baseline_summary["total_training_duration_s"],
+                "baseline_fine_s": baseline_summary["fine_duration_s"],
+                "baseline_peak_vram_mb": baseline_summary["peak_vram_mb"],
+                "total_time_ratio": (current_summary["total_training_duration_s"] /
+                                     baseline_summary["total_training_duration_s"]),
+                "total_time_overhead_percent": 100 * (
+                    current_summary["total_training_duration_s"] /
+                    baseline_summary["total_training_duration_s"] - 1),
+            })
+            baseline_cfg = (args.baseline_model_path / "cfg_args").read_text()
+            baseline_eta = re.search(r"color_residual_scale=([^,)]*)", baseline_cfg)
+            report["configuration"].update({
+                "baseline_color_residual_scale": (
+                    None if baseline_eta is None else float(baseline_eta.group(1))),
+                "timing_comparison_note": (
+                    "The historical Standard-FPS baseline uses its recorded eta; "
+                    "timing is informative but not a matched eta=0.5 quality ablation."),
+            })
+        report["training_time"] = timing
     (adaptive / "split_mechanism_summary.json").write_text(
         json.dumps(report, indent=2) + "\n")
 

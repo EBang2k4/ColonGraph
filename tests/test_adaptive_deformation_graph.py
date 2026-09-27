@@ -230,11 +230,13 @@ class AdaptiveDeformationGraphTests(unittest.TestCase):
             pairs = manager._record_split_pairs(5000, [0], [position])
             self.assertEqual(len(pairs), 1)
             self.assertGreater(pairs[0]["d_pos"], 0)
+            self.assertEqual(pairs[0]["d_appearance_at_split"], 0)
             self.assertEqual(manager.record_motion_diagnostics(5499), [])
             records = manager.record_motion_diagnostics(5500)
             self.assertEqual(len(records), 1)
             self.assertTrue(records[0]["available"])
             self.assertGreater(records[0]["d_motion_mean"], 0)
+            self.assertEqual(records[0]["d_appearance"], 0)
             self.assertEqual(records[0]["offset"], 500)
 
     def test_split_prune_late_schedule_is_validated(self):

@@ -114,9 +114,16 @@ def main():
                 event.get("splits", 0) for event in events),
             "positive_parent_child_separation": bool(pairs) and all(
                 pair["d_pos"] > 0 for pair in pairs),
+            "appearance_copied_exactly_at_split": bool(pairs) and all(
+                pair.get("d_appearance_at_split") == 0 for pair in pairs),
             "motion_offsets_complete": observed == expected,
             "motion_is_finite": bool(available) and all(
                 torch.isfinite(torch.tensor(item["d_motion"])).all().item()
+                for item in available),
+            "appearance_offsets_complete": bool(available) and all(
+                "d_appearance" in item for item in available),
+            "appearance_is_finite": bool(available) and all(
+                torch.isfinite(torch.tensor(item["d_appearance"])).item()
                 for item in available),
         })
 
