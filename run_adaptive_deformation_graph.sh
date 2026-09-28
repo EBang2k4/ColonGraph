@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 source /home/ngocminh/miniconda3/etc/profile.d/conda.sh
 conda activate colonsplat
 
-stage="${1:?usage: $0 a|b|s0|s1|c|cdiag|c_eta05|d|d2|d3 [scene]}"
+stage="${1:?usage: $0 a|a_eta05|b|s0|s1|c|cdiag|c_eta05|d|d2|d3 [scene]}"
 scene="${2:-c1_sigmoid2_t4_v4}"
 sampling_args=()
 color_residual_scale=0.3
@@ -14,6 +14,13 @@ case "$stage" in
         iterations=30000
         adaptive_mode=none
         adaptive_end=20000
+        ;;
+    a_eta05)
+        tag=adaptive_deformation_a_fps2000_eta05
+        iterations=30000
+        adaptive_mode=none
+        adaptive_end=20000
+        color_residual_scale=0.5
         ;;
     b)
         tag=adaptive_deformation_b_fps2000_importance400_fixed

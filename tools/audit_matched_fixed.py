@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model_path", type=Path)
     parser.add_argument("--branch", choices=("a", "b"), required=True)
+    parser.add_argument("--expected-color-scale", type=float, default=.3)
     args = parser.parse_args()
     cfg = read_config(args.model_path / "cfg_args")
     snapshot = torch.load(
@@ -32,7 +33,8 @@ def main():
         "k4": snapshot["graph"]["gaussian_node_indices"].shape[1] == 4,
         "b1_bbox": cfg["node_position_normalization"] == "bbox",
         "r6": cfg["color_model"] == "node_residual_mlp" and
-            cfg["node_appearance_dim"] == 8 and cfg["color_residual_scale"] == .3,
+            cfg["node_appearance_dim"] == 8 and
+            cfg["color_residual_scale"] == args.expected_color_scale,
         "fixed_gaussians": len(snapshot["graph"]["gaussian_node_indices"]) == 364500,
     }
     if args.branch == "a":
@@ -43,6 +45,7 @@ def main():
             cfg["node_importance_extra_nodes"] == 400 and
             cfg["node_sampling_gradient_source"] == "total")
     report = {"pass": all(checks.values()), "branch": args.branch,
+              "expected_color_scale": args.expected_color_scale,
               "checks": checks, "nodes": count}
     (args.model_path / "matched_fixed_audit.json").write_text(
         json.dumps(report, indent=2) + "\n")
