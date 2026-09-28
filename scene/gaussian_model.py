@@ -25,6 +25,7 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation, cdist
 from scene.deformation import (deform_network, NodeDeformationMLP,
                                NodeConditionedResidualAppearance)
 from scene.deformation_graph import SparseDeformationGraph
+from utils.node_arap import CanonicalNodeARAPGraph
 from scene.regulation import compute_plane_smoothness
 from cuvs.neighbors import ivf_flat
 
@@ -74,6 +75,7 @@ class GaussianModel:
             raise ValueError("deformation_mode must be original or node")
         self.deformation_graph = None
         self.appearance_graph = None
+        self.node_arap_graph = None
         self.node_mlp = None
         self.appearance_model = None
         self.profile_deformation = False
@@ -145,6 +147,21 @@ class GaussianModel:
 
     def deform_from_nodes(self, time):
         return self.deformation_graph.blend(*self._query_node_motion(time))
+
+    def node_positions_at_time(self, time):
+        """World-space deformation-node centers for node-level regularizers."""
+        node_translation, _, _ = self._query_node_motion(time)
+        return self.deformation_graph.node_xyz + node_translation
+
+    def initialize_arap_graph(self, k=None):
+        if self.deformation_graph is None:
+            raise RuntimeError("Initialize deformation nodes before the ARAP graph")
+        k = int(k if k is not None else self.args.arap_k)
+        self.node_arap_graph = CanonicalNodeARAPGraph.build(
+            self.deformation_graph.node_xyz.detach(), k=k).to(self._xyz.device)
+        print("Initialized canonical symmetric node ARAP graph: "
+              f"M={len(self.deformation_graph.node_xyz)} K={k} "
+              f"max_degree={self.node_arap_graph.neighbor_indices.shape[1]}")
 
     def deform_geometry_from_nodes(self, time):
         node_motion = self._query_node_motion(time)
@@ -537,6 +554,10 @@ class GaussianModel:
                                               self.args.posebase_pe, self.args.timebase_pe,
                                               self.args.node_position_normalization).cuda()
             self.node_mlp.load_state_dict(state["mlp"])
+            arap_state = state.get("node_arap_graph")
+            self.node_arap_graph = (None if arap_state is None else
+                CanonicalNodeARAPGraph.from_state_dict_payload(
+                    arap_state, device=self._xyz.device))
         elif self.deformation_mode == "node":
             raise FileNotFoundError(f"Missing fixed graph checkpoint: {node_path}")
         
@@ -579,11 +600,15 @@ class GaussianModel:
                 "node_sampling_importance_reference",
                 "node_sampling_gradient_source",
                 "node_importance_extra_nodes",
+                "geometry_regularizer", "arap_weight", "arap_k",
+                "arap_eval_k", "arap_seed", "experiment_seed",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
                         "appearance_graph": (None if self.appearance_graph is None else
                                              self.appearance_graph.state_dict()),
                         "mlp": self.node_mlp.state_dict(),
+                        "node_arap_graph": (None if self.node_arap_graph is None else
+                                            self.node_arap_graph.state_dict_payload()),
                         "config": {key: getattr(self.args, key) for key in node_config_keys}},
                        os.path.join(path, "deformation_nodes.pth"))
         if self.appearance_model is not None:

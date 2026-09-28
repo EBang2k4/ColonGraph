@@ -89,6 +89,17 @@ class ModelHiddenParams(ParamGroup):
         self.node_importance_extra_nodes = 0
         self.gaussian_knn_reference = ""
         self.gaussian_knn_save = ""
+        # Fine-stage geometry regularizer.  Coarse always retains the matched
+        # KNN-99 term so paired branches reach the same post-coarse state.
+        self.geometry_regularizer = "knn99"
+        self.arap_weight = 0.0
+        self.arap_k = 6
+        self.arap_eval_k = 8
+        self.arap_seed = 1907
+        self.arap_gradient_audit_iterations = "2000,5000,10000"
+        # Resets only the fine-stage sampling RNG, after the common untrained
+        # initialization has been restored.
+        self.experiment_seed = 0
         self.adaptive_node_mode = "none"
         self.adaptive_node_start = 5000
         self.adaptive_node_end = 20000

@@ -53,6 +53,23 @@ def _gradient_norm(parameters, reference):
     return total.sqrt().item()
 
 
+def _autograd_norm(loss, parameters):
+    parameters = tuple(parameters)
+    gradients = torch.autograd.grad(
+        loss, parameters, retain_graph=True, allow_unused=True)
+    total = loss.new_zeros(())
+    for gradient in gradients:
+        if gradient is not None:
+            total = total + gradient.detach().square().sum()
+    return total.sqrt().item()
+
+
+def _append_arap_diagnostic(model_path, row):
+    path = os.path.join(model_path, "arap_diagnostics.jsonl")
+    with open(path, "a") as stream:
+        stream.write(json.dumps(row) + "\n")
+
+
 def _append_r6_diagnostic(model_path, row):
     path = os.path.join(model_path, "joint_r6_diagnostics.csv")
     exists = os.path.exists(path)
@@ -90,6 +107,12 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     first_iter += 1
     
     lpips_model = lpips.LPIPS(net="vgg").cuda()
+    arap_audit_iterations = {
+        int(value) for value in str(hyper.arap_gradient_audit_iterations).split(",")
+        if value.strip()
+    }
+    arap_generator = torch.Generator(device="cpu").manual_seed(
+        int(hyper.arap_seed) + 100003 * int(hyper.experiment_seed))
     adaptive_manager = None
     if stage == "fine" and hyper.adaptive_node_mode != "none":
         adaptive_config = AdaptiveNodeConfig(
@@ -265,17 +288,42 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             depth_loss = rendered_depths.new_zeros(())
         loss +=depth_loss
 
-        ## XYZ CLUSTER LOSS
-        idx = gaussians.closest_point_indices
-        K = int(idx.max().item()) + 1
+        ## GEOMETRY REGULARIZER
+        # Coarse retains the matched KNN-99 term for every branch.  The paired
+        # fine-stage experiment replaces only that term with node-level ARAP.
+        loss_clusters = transformed_means.new_zeros(())
+        loss_arap_raw = transformed_means.new_zeros(())
+        loss_arap = transformed_means.new_zeros(())
+        arap_diagnostics = None
+        use_fine_knn = hyper.geometry_regularizer in ("knn99", "knn99_arap_monitor")
+        if stage == "coarse" or use_fine_knn:
+            idx = gaussians.closest_point_indices
+            cluster_pts = transformed_means[idx]
+            cluster_means = cluster_pts.mean(dim=1)
+            center_points = transformed_means[
+                torch.arange(cluster_means.shape[0], device=cluster_means.device)]
+            per_point_sq_dist = ((center_points - cluster_means) ** 2).sum(dim=1)
+            loss_clusters = opt.knn_weight * per_point_sq_dist.mean()
+            loss += loss_clusters
 
-        cluster_pts = transformed_means[idx]
-        cluster_means = cluster_pts.mean(dim=1)
-        center_points = transformed_means[torch.arange(cluster_means.shape[0], device=cluster_means.device)]
-        per_point_sq_dist = ((center_points - cluster_means) ** 2).sum(dim=1)
-
-        loss_clusters = opt.knn_weight * per_point_sq_dist.mean()
-        loss += loss_clusters
+        needs_arap = (stage == "fine" and (
+            hyper.geometry_regularizer == "arap" or
+            (hyper.geometry_regularizer == "knn99_arap_monitor" and
+             iteration in arap_audit_iterations)))
+        if needs_arap:
+            if gaussians.node_arap_graph is None:
+                raise RuntimeError("ARAP regularizer requested without an initialized graph")
+            t2_index = int(torch.randint(
+                len(viewpoint_stack), (1,), generator=arap_generator).item())
+            t1 = viewpoint_cams[0].time
+            t2 = viewpoint_stack[t2_index].time
+            nodes_t1 = gaussians.node_positions_at_time(t1)
+            nodes_t2 = gaussians.node_positions_at_time(t2)
+            loss_arap_raw, arap_diagnostics = gaussians.node_arap_graph(
+                nodes_t1, nodes_t2, return_diagnostics=True)
+            if hyper.geometry_regularizer == "arap":
+                loss_arap = float(hyper.arap_weight) * loss_arap_raw
+                loss += loss_arap
 
         ### MINIMIZE DCOLOR UPDATE - DCOL LOSS
         residual_weight = (opt.lambda_res if gaussians.color_model == "node_residual_mlp"
@@ -293,6 +341,36 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         img_tvloss = TV_loss(rendered_images)
         tv_loss = opt.tv_weight * (img_tvloss) # + depth_tvloss)
         loss += tv_loss
+
+        reconstruction_loss = (Ll1 + depth_loss + loss_dcol +
+                               loss_color_smooth + tv_loss)
+        if needs_arap and iteration in arap_audit_iterations:
+            deformation_parameters = tuple(gaussians.node_mlp.parameters())
+            reconstruction_gradient_norm = _autograd_norm(
+                reconstruction_loss, deformation_parameters)
+            arap_raw_gradient_norm = _autograd_norm(
+                loss_arap_raw, deformation_parameters)
+            raw_ratio = arap_raw_gradient_norm / max(reconstruction_gradient_norm, 1e-20)
+            row = {
+                "iteration": int(iteration),
+                "experiment_seed": int(hyper.experiment_seed),
+                "regularizer": hyper.geometry_regularizer,
+                "t1": float(torch.as_tensor(t1).reshape(-1)[0]),
+                "t2": float(torch.as_tensor(t2).reshape(-1)[0]),
+                "arap_raw_loss": float(loss_arap_raw.detach()),
+                "arap_weight": float(hyper.arap_weight),
+                "reconstruction_gradient_norm": reconstruction_gradient_norm,
+                "arap_raw_gradient_norm": arap_raw_gradient_norm,
+                "raw_gradient_ratio": raw_ratio,
+                "weighted_gradient_ratio": float(hyper.arap_weight) * raw_ratio,
+                "reflection_ratio": arap_diagnostics.reflection_ratio,
+                "singular_value_min": float(arap_diagnostics.singular_values.min()),
+                "singular_value_median": float(arap_diagnostics.singular_values.median()),
+                "per_node_loss_p95": float(torch.quantile(
+                    arap_diagnostics.per_node_loss, 0.95)),
+            }
+            _append_arap_diagnostic(scene.model_path, row)
+            print("[ARAP_GRADIENT_AUDIT] " + json.dumps(row), flush=True)
 
         if mask:
             psnr_ = psnr(images_concealing, gt_images, masks).mean().double()      
@@ -340,6 +418,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 "depth_loss": depth_loss.item(),
                 "raw_depth_mse": raw_depth_mse,
                 "knn_loss": loss_clusters.item(),
+                "arap_raw_loss": loss_arap_raw.item(),
+                "arap_weighted_loss": loss_arap.item(),
                 "residual_loss": loss_dcol.item(),
                 "mean_abs_delta": dcol.detach().abs().mean().item(),
                 "max_abs_delta": dcol.detach().abs().max().item(),
@@ -468,6 +548,17 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         raise ValueError("fps_plus_importance requires node_importance_extra_nodes > 0")
     if hyper.node_sampling_gradient_source not in ("total", "depth"):
         raise ValueError("node_sampling_gradient_source must be total or depth")
+    if hyper.geometry_regularizer not in ("knn99", "knn99_arap_monitor", "arap"):
+        raise ValueError("geometry_regularizer must be knn99, knn99_arap_monitor, or arap")
+    if hyper.geometry_regularizer != "knn99":
+        if hyper.deformation_mode != "node":
+            raise ValueError("Node ARAP requires deformation_mode=node")
+        if hyper.arap_k != 6:
+            raise ValueError("Revised ARAP v1 requires canonical K_train=6")
+        if hyper.arap_weight < 0 or not np.isfinite(hyper.arap_weight):
+            raise ValueError("arap_weight must be finite and nonnegative")
+    if hyper.geometry_regularizer == "arap" and hyper.adaptive_node_mode != "none":
+        raise ValueError("Run and gate fixed-node A0 before implementing adaptive A1 ARAP")
     if hyper.color_model == "node_residual_mlp":
         if hyper.deformation_mode != "node":
             raise ValueError("node_residual_mlp requires deformation_mode=node")
@@ -620,11 +711,16 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
                 del sampling_state, observed, canonical, selected, nodes, indices, weights
             if hyper.color_model == "node_residual_mlp":
                 gaussians.initialize_appearance_model()
+            if hyper.geometry_regularizer != "knn99":
+                gaussians.initialize_arap_graph(hyper.arap_k)
         
         opt.pruning_interval=opt.pruning_interval_fine
         opt.pruning_from_iter=opt.pruning_from_iter
         opt.densification_interval=opt.densification_interval_fine
         opt.densify_from_iter=opt.densify_from_iter_fine
+        # Paired seeds vary only fine-stage data order and ARAP temporal pairs;
+        # all branches reload the same post-coarse Gaussian/node/MLP state.
+        setup_seed(int(hyper.experiment_seed))
         fine_start = walltime.monotonic()
         scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                             checkpoint_iterations, checkpoint, debug_from,
