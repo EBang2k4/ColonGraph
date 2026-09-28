@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--iteration", type=int, default=30000)
     parser.add_argument("--branch", choices=("c", "d", "d2", "d3"), required=True)
     parser.add_argument("--mechanism-diagnostic", action="store_true")
+    parser.add_argument("--fixed-appearance-graph", action="store_true")
     args = parser.parse_args()
     adaptive = args.model_path / "adaptive_nodes"
     events = [json.loads(line) for line in
@@ -62,6 +63,30 @@ def main():
             1600 <= event["nodes_after"] <= 2400 for event in events),
         "final_matches_trajectory": len(state["node_xyz"]) == events[-1]["nodes_after"],
     }
+    if args.fixed_appearance_graph:
+        appearance_graph = node_snapshot.get("appearance_graph")
+        source = torch.load(
+            Path("output/baseline1_nodes2000") / args.model_path.name /
+            "point_cloud/iteration_1/deformation_nodes.pth",
+            map_location="cpu", weights_only=True)["graph"]
+        checks.update({
+            "fixed_appearance_graph_present": appearance_graph is not None,
+            "fixed_appearance_nodes_2000": (appearance_graph is not None and
+                                             len(appearance_graph["node_xyz"]) == 2000),
+            "appearance_features_2000": len(
+                appearance["state_dict"]["node_appearance"]) == 2000,
+            "appearance_graph_xyz_source_exact": (appearance_graph is not None and
+                torch.equal(appearance_graph["node_xyz"], source["node_xyz"])),
+            "appearance_graph_indices_source_exact": (appearance_graph is not None and
+                torch.equal(appearance_graph["gaussian_node_indices"],
+                            source["gaussian_node_indices"])),
+            "appearance_graph_weights_source_exact": (appearance_graph is not None and
+                torch.equal(appearance_graph["gaussian_node_weights"],
+                            source["gaussian_node_weights"])),
+            "geometry_graph_grew_independently": len(graph["node_xyz"]) > 2000,
+            "appearance_graph_mode_saved": node_snapshot["config"].get(
+                "node_appearance_graph_mode") == "fixed_initial",
+        })
     if args.branch == "c":
         checks["split_only"] = all(event.get("prunes", 0) == 0 for event in events)
         checks["grew_from_2000"] = len(state["node_xyz"]) > 2000

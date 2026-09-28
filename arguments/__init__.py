@@ -123,6 +123,7 @@ class ModelHiddenParams(ParamGroup):
         self.color_residual_scale = 0.1
         self.color_residual_tanh = True
         self.node_appearance_dim = 8
+        self.node_appearance_graph_mode = "shared"
         self.appearance_seed = 0
         self.timebase_pe = 4
         self.defor_depth = 1

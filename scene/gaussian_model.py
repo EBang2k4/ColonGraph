@@ -73,6 +73,7 @@ class GaussianModel:
         if self.deformation_mode not in ("original", "node"):
             raise ValueError("deformation_mode must be original or node")
         self.deformation_graph = None
+        self.appearance_graph = None
         self.node_mlp = None
         self.appearance_model = None
         self.profile_deformation = False
@@ -120,11 +121,20 @@ class GaussianModel:
             raise ValueError("R6 requires the existing K=4 Gaussian-to-node graph")
         if self.args.use_do or self.args.no_dcol:
             raise ValueError("R6 requires use_do=False and no_dcol=False")
+        graph_mode = getattr(self.args, "node_appearance_graph_mode", "shared")
+        if graph_mode not in ("shared", "fixed_initial"):
+            raise ValueError("node_appearance_graph_mode must be shared or fixed_initial")
+        if graph_mode == "fixed_initial" and self.appearance_graph is None:
+            graph = self.deformation_graph
+            self.appearance_graph = SparseDeformationGraph(
+                graph.node_xyz, graph.gaussian_node_indices, graph.gaussian_node_weights)
+        appearance_graph = (self.appearance_graph if graph_mode == "fixed_initial"
+                            else self.deformation_graph)
         self.appearance_model = NodeConditionedResidualAppearance(
-            self.args, len(self.deformation_graph.node_xyz)).to(self._xyz.device)
-        print("Initialized R6 appearance: node_dim={} input=37 eta={} tanh={} seed={}".format(
+            self.args, len(appearance_graph.node_xyz)).to(self._xyz.device)
+        print("Initialized R6 appearance: node_dim={} input=37 eta={} tanh={} seed={} graph={}".format(
             self.args.node_appearance_dim, self.args.color_residual_scale,
-            self.args.color_residual_tanh, self.args.appearance_seed))
+            self.args.color_residual_tanh, self.args.appearance_seed, graph_mode))
 
     def _query_node_motion(self, time):
         if self.deformation_graph is None:
@@ -162,10 +172,13 @@ class GaussianModel:
             if self.color_model == "node_residual_mlp":
                 if self.appearance_model is None:
                     raise RuntimeError("R6 appearance was not initialized or loaded")
+                appearance_graph = (self.appearance_graph
+                                    if self.appearance_graph is not None
+                                    else self.deformation_graph)
                 appearance = self.appearance_model(
                     points, time, colors, color_embedding,
-                    self.deformation_graph.gaussian_node_indices,
-                    self.deformation_graph.gaussian_node_weights)
+                    appearance_graph.gaussian_node_indices,
+                    appearance_graph.gaussian_node_weights)
             else:
                 opacity, appearance = self._deformation.deformation_net.forward_color_only(
                     points, opacity, colors, time, color_embedding)
@@ -514,6 +527,12 @@ class GaussianModel:
             graph = state["graph"]
             self.deformation_graph = SparseDeformationGraph(
                 graph["node_xyz"], graph["gaussian_node_indices"], graph["gaussian_node_weights"])
+            appearance_graph = state.get("appearance_graph")
+            self.appearance_graph = (None if appearance_graph is None else
+                SparseDeformationGraph(
+                    appearance_graph["node_xyz"],
+                    appearance_graph["gaussian_node_indices"],
+                    appearance_graph["gaussian_node_weights"]))
             self.node_mlp = NodeDeformationMLP(self.args.node_mlp_width, self.args.node_mlp_depth,
                                               self.args.posebase_pe, self.args.timebase_pe,
                                               self.args.node_position_normalization).cuda()
@@ -555,20 +574,22 @@ class GaussianModel:
                 "posebase_pe", "timebase_pe", "node_position_mode",
                 "node_position_normalization", "color_model",
                 "color_residual_scale", "color_residual_tanh",
-                "node_appearance_dim", "appearance_seed",
+                "node_appearance_dim", "node_appearance_graph_mode", "appearance_seed",
                 "node_sampling", "node_sampling_alpha",
                 "node_sampling_importance_reference",
                 "node_sampling_gradient_source",
                 "node_importance_extra_nodes",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
+                        "appearance_graph": (None if self.appearance_graph is None else
+                                             self.appearance_graph.state_dict()),
                         "mlp": self.node_mlp.state_dict(),
                         "config": {key: getattr(self.args, key) for key in node_config_keys}},
                        os.path.join(path, "deformation_nodes.pth"))
         if self.appearance_model is not None:
             appearance_config = {key: getattr(self.args, key) for key in (
                 "color_model", "color_residual_scale", "color_residual_tanh",
-                "node_appearance_dim", "appearance_seed")}
+                "node_appearance_dim", "node_appearance_graph_mode", "appearance_seed")}
             torch.save({"format_version": 1, "config": appearance_config,
                         "state_dict": self.appearance_model.state_dict()},
                        os.path.join(path, "appearance.pth"))

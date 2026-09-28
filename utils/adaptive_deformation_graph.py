@@ -170,6 +170,10 @@ class AdaptiveNodeManager:
         return self.model.deformation_graph
 
     @property
+    def appearance_graph_fixed(self):
+        return getattr(self.model, "appearance_graph", None) is not None
+
+    @property
     def shock_reference_scale(self):
         scale = getattr(getattr(self.model, "node_mlp", None), "position_scale", None)
         if scale is not None and float(scale) > 1:
@@ -322,6 +326,8 @@ class AdaptiveNodeManager:
         return affected_total, old_ids_per_gaussian
 
     def _resize_appearance(self, parents):
+        if self.appearance_graph_fixed:
+            return
         _replace_parameter_rows(self.model.optimizer, self.model.appearance_model,
                                 "node_appearance", source_rows=parents)
 
@@ -335,9 +341,9 @@ class AdaptiveNodeManager:
             parent_id = int(self.parent_ids[-len(parents) + len(records)])
             parent_xyz = self.graph.node_xyz[parent_row].detach()
             child_row = len(self.graph.node_xyz) - len(parents) + len(records)
-            appearance_distance = (
+            appearance_distance = None if self.appearance_graph_fixed else float((
                 self.model.appearance_model.node_appearance[child_row] -
-                self.model.appearance_model.node_appearance[parent_row]).detach().norm()
+                self.model.appearance_model.node_appearance[parent_row]).detach().norm())
             record = {
                 "parent_id": parent_id,
                 "child_id": int(child_id),
@@ -345,7 +351,7 @@ class AdaptiveNodeManager:
                 "parent_xyz": parent_xyz.cpu().tolist(),
                 "child_xyz": child_xyz.detach().cpu().tolist(),
                 "d_pos": float((child_xyz - parent_xyz).norm()),
-                "d_appearance_at_split": float(appearance_distance),
+                "d_appearance_at_split": appearance_distance,
             }
             self.split_pairs.append(record)
             records.append(record)
@@ -380,9 +386,9 @@ class AdaptiveNodeManager:
             else:
                 difference = (motion_bank[:, child_row] -
                               motion_bank[:, parent_row]).norm(dim=1)
-                appearance_difference = (
-                    self.model.appearance_model.node_appearance[child_row] -
-                    self.model.appearance_model.node_appearance[parent_row]).detach()
+                appearance_difference = (None if self.appearance_graph_fixed else
+                    (self.model.appearance_model.node_appearance[child_row] -
+                     self.model.appearance_model.node_appearance[parent_row]).detach())
                 record = {
                     **pair,
                     "iteration": int(iteration),
@@ -393,9 +399,12 @@ class AdaptiveNodeManager:
                     "d_motion_mean": float(difference.mean()),
                     "d_motion_p95": float(torch.quantile(difference, 0.95)),
                     "d_motion_max": float(difference.max()),
-                    "d_appearance": float(appearance_difference.norm()),
-                    "d_appearance_abs_mean": float(appearance_difference.abs().mean()),
-                    "d_appearance_abs_max": float(appearance_difference.abs().max()),
+                    "d_appearance": (None if appearance_difference is None else
+                                     float(appearance_difference.norm())),
+                    "d_appearance_abs_mean": (None if appearance_difference is None else
+                                              float(appearance_difference.abs().mean())),
+                    "d_appearance_abs_max": (None if appearance_difference is None else
+                                             float(appearance_difference.abs().max())),
                 }
             self.motion_diagnostics.append(record)
             records.append(record)
@@ -590,8 +599,9 @@ class AdaptiveNodeManager:
             raise AssertionError("pruned node remains in repaired graph")
         self.model.deformation_graph = SparseDeformationGraph(
             graph.node_xyz[keep], indices, weights)
-        _replace_parameter_rows(self.model.optimizer, self.model.appearance_model,
-                                "node_appearance", keep_rows=keep)
+        if not self.appearance_graph_fixed:
+            _replace_parameter_rows(self.model.optimizer, self.model.appearance_model,
+                                    "node_appearance", keep_rows=keep)
         self.node_ids = self.node_ids[keep]
         self.parent_ids = self.parent_ids[keep]
         self.birth_iterations = self.birth_iterations[keep]

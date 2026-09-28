@@ -101,6 +101,30 @@ class AdaptiveDeformationGraphTests(unittest.TestCase):
             self.assertEqual(torch.count_nonzero(adam_state["exp_avg"][-1]), 0)
             self.assertEqual(torch.count_nonzero(adam_state["exp_avg_sq"][-1]), 0)
 
+    def test_split_can_keep_appearance_graph_and_features_fixed_at_2000(self):
+        with tempfile.TemporaryDirectory() as path:
+            model = _model()
+            model.appearance_graph = SparseDeformationGraph(
+                model.deformation_graph.node_xyz,
+                model.deformation_graph.gaussian_node_indices,
+                model.deformation_graph.gaussian_node_weights)
+            manager = AdaptiveNodeManager(model, _config(), path)
+            old_context = model.appearance_model.node_context(
+                model.appearance_graph.gaussian_node_indices,
+                model.appearance_graph.gaussian_node_weights).detach().clone()
+            position = torch.tensor([-0.90, 0.08, 0.0])
+            manager._append_children([0], [position])
+            manager._resize_appearance([0])
+            pairs = manager._record_split_pairs(5000, [0], [position])
+            new_context = model.appearance_model.node_context(
+                model.appearance_graph.gaussian_node_indices,
+                model.appearance_graph.gaussian_node_weights).detach()
+            self.assertEqual(len(model.deformation_graph.node_xyz), 2001)
+            self.assertEqual(len(model.appearance_graph.node_xyz), 2000)
+            self.assertEqual(len(model.appearance_model.node_appearance), 2000)
+            self.assertTrue(torch.equal(old_context, new_context))
+            self.assertIsNone(pairs[0]["d_appearance_at_split"])
+
     def test_adaptive_checkpoint_roundtrip_reproduces_context(self):
         with tempfile.TemporaryDirectory() as path:
             model = _model()

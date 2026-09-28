@@ -4,10 +4,11 @@ cd "$(dirname "$0")"
 source /home/ngocminh/miniconda3/etc/profile.d/conda.sh
 conda activate colonsplat
 
-stage="${1:?usage: $0 a|a_eta05|b|s0|s1|c|cdiag|c_eta05|d|d2|d3 [scene]}"
+stage="${1:?usage: $0 a|a_eta05|b|s0|s1|c|cdiag|c_eta05|c_geom_eta05|d|d2|d3 [scene]}"
 scene="${2:-c1_sigmoid2_t4_v4}"
 sampling_args=()
 color_residual_scale=0.3
+appearance_graph_mode=shared
 case "$stage" in
     a)
         tag=adaptive_deformation_a_fps2000_fixed
@@ -61,6 +62,14 @@ case "$stage" in
         adaptive_end=20000
         color_residual_scale=0.5
         ;;
+    c_geom_eta05)
+        tag=adaptive_deformation_c_geometry_only_eta05
+        iterations=30000
+        adaptive_mode=split
+        adaptive_end=20000
+        color_residual_scale=0.5
+        appearance_graph_mode=fixed_initial
+        ;;
     d)
         tag=adaptive_deformation_d_split_prune
         iterations=30000
@@ -106,6 +115,7 @@ printf '%s RUNNING %s\n' "$(date --iso-8601=seconds)" "$current" | tee "${log_di
     --node_initialization_reference "output/baseline1_nodes2000/${scene}/point_cloud/iteration_1" \
     --node_mlp_width 128 --node_mlp_depth 3 \
     --color_model node_residual_mlp --node_appearance_dim 8 \
+    --node_appearance_graph_mode "$appearance_graph_mode" \
     --color_residual_scale "$color_residual_scale" --appearance_seed 0 --lambda_res 0 \
     --coarse_iterations 100 --iterations "$iterations" \
     --depth_weight 0.25 --knn_weight 0.01 --dcol_weight 0.005 \
