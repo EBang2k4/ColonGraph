@@ -4,6 +4,7 @@ import unittest
 import torch
 
 from utils.node_arap import CanonicalNodeARAPGraph
+from utils.loss_utils import canonical_xyz_laplacian
 
 
 def _axis_angle_rotation(axis, angle, dtype=torch.float64):
@@ -96,6 +97,17 @@ class CanonicalNodeARAPTests(unittest.TestCase):
         self.assertEqual(restored.k, self.graph.k)
         for key, value in self.graph.state_dict().items():
             self.assertTrue(torch.equal(value, restored.state_dict()[key]))
+
+    def test_canonical_laplacian_is_exact_knn_component_and_xyz_only(self):
+        xyz = self.xyz.detach().clone().requires_grad_(True)
+        idx = torch.cdist(xyz.detach(), xyz.detach()).topk(
+            7, largest=False).indices[:, 1:]
+        expected = (xyz - xyz[idx].mean(1)).square().sum(1).mean()
+        actual = canonical_xyz_laplacian(xyz, idx)
+        self.assertTrue(torch.equal(actual, expected))
+        gradient, = torch.autograd.grad(actual, xyz)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(float(gradient.norm()), 0)
 
 
 if __name__ == "__main__":

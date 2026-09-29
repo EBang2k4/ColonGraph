@@ -15,7 +15,8 @@ import json
 import time as walltime
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, lpips_loss, TV_loss
+from utils.loss_utils import (l1_loss, ssim, lpips_loss, TV_loss,
+                             canonical_xyz_laplacian)
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -294,6 +295,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         loss_clusters = transformed_means.new_zeros(())
         loss_arap_raw = transformed_means.new_zeros(())
         loss_arap = transformed_means.new_zeros(())
+        loss_canonical_laplacian = transformed_means.new_zeros(())
         arap_diagnostics = None
         use_fine_knn = hyper.geometry_regularizer in ("knn99", "knn99_arap_monitor")
         if stage == "coarse" or use_fine_knn:
@@ -305,6 +307,12 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             per_point_sq_dist = ((center_points - cluster_means) ** 2).sum(dim=1)
             loss_clusters = opt.knn_weight * per_point_sq_dist.mean()
             loss += loss_clusters
+        elif stage == "fine" and hyper.geometry_regularizer == "arap":
+            loss_canonical_laplacian = (
+                float(hyper.canonical_laplacian_weight) *
+                canonical_xyz_laplacian(
+                    gaussians._xyz, gaussians.closest_point_indices))
+            loss += loss_canonical_laplacian
 
         needs_arap = (stage == "fine" and (
             hyper.geometry_regularizer == "arap" or
@@ -420,6 +428,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 "knn_loss": loss_clusters.item(),
                 "arap_raw_loss": loss_arap_raw.item(),
                 "arap_weighted_loss": loss_arap.item(),
+                "canonical_laplacian_loss": loss_canonical_laplacian.item(),
                 "residual_loss": loss_dcol.item(),
                 "mean_abs_delta": dcol.detach().abs().mean().item(),
                 "max_abs_delta": dcol.detach().abs().max().item(),
@@ -557,6 +566,9 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
             raise ValueError("Revised ARAP v1 requires canonical K_train=6")
         if hyper.arap_weight < 0 or not np.isfinite(hyper.arap_weight):
             raise ValueError("arap_weight must be finite and nonnegative")
+        if (hyper.canonical_laplacian_weight < 0 or
+                not np.isfinite(hyper.canonical_laplacian_weight)):
+            raise ValueError("canonical_laplacian_weight must be finite and nonnegative")
     if hyper.geometry_regularizer == "arap" and hyper.adaptive_node_mode != "none":
         raise ValueError("Run and gate fixed-node A0 before implementing adaptive A1 ARAP")
     if hyper.color_model == "node_residual_mlp":
@@ -720,7 +732,8 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         opt.densify_from_iter=opt.densify_from_iter_fine
         # Paired seeds vary only fine-stage data order and ARAP temporal pairs;
         # all branches reload the same post-coarse Gaussian/node/MLP state.
-        setup_seed(int(hyper.experiment_seed))
+        if hyper.reset_fine_rng:
+            setup_seed(int(hyper.experiment_seed))
         fine_start = walltime.monotonic()
         scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                             checkpoint_iterations, checkpoint, debug_from,

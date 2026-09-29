@@ -57,6 +57,19 @@ node XYZ is a buffer.  Therefore node ARAP directly regularizes only the node
 translation trajectory and shared MLP trunk.  It does **not** replace the
 canonical-Gaussian-XYZ smoothing effect of KNN-99.
 
+## Canonical XYZ component retained in the revised replacement
+
+The revised A0 branch explicitly keeps
+
+```text
+L_canonical = 0.01 * mean_i ||x_i^0 - mean_{j in KNN99(i)} x_j^0||^2.
+```
+
+It uses the same frozen KNN-99 index tensor.  This term has gradients only to
+canonical per-Gaussian XYZ and no path to `NodeDeformationMLP`.  Node ARAP then
+replaces only the time-varying deformation smoothing role.  At zero
+deformation, `L_canonical` is exactly the historical KNN-99 loss.
+
 ## Controlled replacement
 
 To guarantee identical K0/A0 starting states, the 100 coarse iterations retain
@@ -67,7 +80,25 @@ then applies only during fine training:
 - K0: KNN-99 on, ARAP off;
 - A0: KNN-99 off, ARAP on.
 
+More precisely, revised A0 uses canonical-XYZ Laplacian + node ARAP; it does
+not leave canonical XYZ unregularized.
+
 Thus “KNN-99 off” in the result table means off for the full 30k fine stage;
 the common coarse initializer is not an experimental variable.  This detail is
 required when interpreting canonical XYZ drift in A0.
 
+## Revised gradient calibration
+
+The first single-frame calibration was rejected: the sampled K0 checkpoint had
+zero accumulated alpha and therefore a genuinely zero render gradient to the
+deformation MLP.  Dividing by that zero produced a meaningless lambda near
+`2e-21`.
+
+The revised audit loads checkpoints at 2k/5k/10k and uses 16 deterministic
+global temporal pairs at each checkpoint.  For every `t1`, it renders the
+training frame and calls `torch.autograd.grad` directly on all
+`NodeDeformationMLP` parameters for the RGB/depth/TV reconstruction loss.  It
+separately refits ARAP over `(t1,t2)`, calls `autograd.grad` on the same
+parameters, averages parameter gradients over the 16 samples, and takes the
+ratio of the two aggregate norms.  The audit hard-fails if coverage or at least
+75% of per-frame reconstruction gradients are not meaningful.

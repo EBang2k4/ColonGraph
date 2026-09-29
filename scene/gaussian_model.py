@@ -602,6 +602,7 @@ class GaussianModel:
                 "node_importance_extra_nodes",
                 "geometry_regularizer", "arap_weight", "arap_k",
                 "arap_eval_k", "arap_seed", "experiment_seed",
+                "canonical_laplacian_weight", "reset_fine_rng",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
                         "appearance_graph": (None if self.appearance_graph is None else

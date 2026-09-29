@@ -93,6 +93,7 @@ class ModelHiddenParams(ParamGroup):
         # KNN-99 term so paired branches reach the same post-coarse state.
         self.geometry_regularizer = "knn99"
         self.arap_weight = 0.0
+        self.canonical_laplacian_weight = 0.01
         self.arap_k = 6
         self.arap_eval_k = 8
         self.arap_seed = 1907
@@ -100,6 +101,7 @@ class ModelHiddenParams(ParamGroup):
         # Resets only the fine-stage sampling RNG, after the common untrained
         # initialization has been restored.
         self.experiment_seed = 0
+        self.reset_fine_rng = False
         self.adaptive_node_mode = "none"
         self.adaptive_node_start = 5000
         self.adaptive_node_end = 20000
