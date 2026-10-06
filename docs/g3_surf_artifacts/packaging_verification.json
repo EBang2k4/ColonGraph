@@ -1,0 +1,21 @@
+{
+  "unit_tests": {"passed": 26, "failed": 0},
+  "checkpoint_read_only_replay": {
+    "pass": true,
+    "state_sha256": "9f1f6fbc699a8ebb6f6341a95ebc40b9e43ff1050d12207d81e338a7946ca840",
+    "tensor_reload_exact": true,
+    "replay_state_unchanged": true,
+    "replay_max_abs_differences": {
+      "render": 0.000005170702934265137,
+      "depth": 0.000152587890625,
+      "alpha": 0.000009834766387939453,
+      "transformed_points": 0.000030517578125,
+      "transformed_color": 0.0
+    }
+  },
+  "new_training_started": false,
+  "optimizer_steps": 0,
+  "source_files_written": 0,
+  "launcher_dry_run_pass": true,
+  "missing_local_python_imports": []
+}

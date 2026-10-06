@@ -27,6 +27,11 @@ def main():
     adaptive = args.model_path / "adaptive_nodes"
     events = [json.loads(line) for line in
               (adaptive / "adaptive_events.jsonl").read_text().splitlines()]
+    split_breakdown_available = all(
+        "rejected_by_shock_only" in event and
+        "rejected_by_overlap_only" in event and
+        "rejected_by_shock_and_overlap" in event
+        for event in events)
     state = torch.load(adaptive / "adaptive_state_final.pth", map_location="cpu",
                        weights_only=False)
     snapshot_path = (args.model_path / "point_cloud" /
@@ -176,6 +181,17 @@ def main():
         "mean_changed_k4_percent": sum(event["changed_k4_percent"] for event in events) / len(events),
         "total_splits_suppressed_by_budget": sum(
             event.get("splits_suppressed_by_budget", 0) for event in events),
+        "split_rejection_breakdown_available": split_breakdown_available,
+        "rejected_by_shock": (None if not split_breakdown_available else sum(
+            event["rejected_by_shock"] for event in events)),
+        "rejected_by_overlap": (None if not split_breakdown_available else sum(
+            event["rejected_by_overlap"] for event in events)),
+        "rejected_by_shock_only": (None if not split_breakdown_available else sum(
+            event["rejected_by_shock_only"] for event in events)),
+        "rejected_by_overlap_only": (None if not split_breakdown_available else sum(
+            event["rejected_by_overlap_only"] for event in events)),
+        "rejected_by_shock_and_overlap": (None if not split_breakdown_available else sum(
+            event["rejected_by_shock_and_overlap"] for event in events)),
         "total_prune_candidates": sum(event.get("prune_candidates", 0) for event in events),
         "total_prunes": sum(event.get("prunes", 0) for event in events),
         "rejected_low_redundancy": sum(

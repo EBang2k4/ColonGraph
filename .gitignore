@@ -20,3 +20,17 @@ data/
 pretrained_gaussians/
 *.ply
 submodules/diff-gaussian-rasterization-rades/*
+
+# Baseline packages contain code and small provenance reports, never credentials
+# or large generated artifacts.
+data_custom_rgb_depth/
+*.log
+*.pth
+*.pt
+*.ckpt
+*.npz
+*.mp4
+.env
+.env.*
+*.pem
+*.key

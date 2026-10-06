@@ -1,0 +1,12 @@
+{
+  "pass_": true,
+  "identical_initial_state_except_connectivity": true,
+  "actual_camera_sequence_exact": true,
+  "updates": 28000,
+  "mean_render_differences": {
+    "render": 0.0,
+    "depth": 0.0,
+    "alpha": 0.0
+  },
+  "camera_sequence_sha256": "0ce7dfe57fad3093388bc68f390799b88e9e104e12323b606ffe1c3c37cbf42d"
+}

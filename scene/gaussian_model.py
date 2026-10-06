@@ -26,6 +26,9 @@ from scene.deformation import (deform_network, NodeDeformationMLP,
                                NodeConditionedResidualAppearance)
 from scene.deformation_graph import SparseDeformationGraph
 from utils.node_arap import CanonicalNodeARAPGraph
+from utils.gaussian_isometry import LocalGaussianIsometryGraph
+from utils.node_edge_graph import NodeEdgeConsistencyGraph
+from utils.graph_forward import GraphMotionResidual, residual_statistics
 from scene.regulation import compute_plane_smoothness
 from cuvs.neighbors import ivf_flat
 
@@ -76,6 +79,12 @@ class GaussianModel:
         self.deformation_graph = None
         self.appearance_graph = None
         self.node_arap_graph = None
+        self.gaussian_isometry_graph = None
+        self.node_edge_graph = None
+        self.graph_motion_residual = None
+        self.surface_children = None
+        self.graph_forward_changed_mask = None
+        self.graph_forward_reference_data = None
         self.node_mlp = None
         self.appearance_model = None
         self.profile_deformation = False
@@ -138,15 +147,135 @@ class GaussianModel:
             self.args.node_appearance_dim, self.args.color_residual_scale,
             self.args.color_residual_tanh, self.args.appearance_seed, graph_mode))
 
-    def _query_node_motion(self, time):
+    def _query_base_node_motion(self, time):
         if self.deformation_graph is None:
             raise RuntimeError("Initialize nodes after coarse before fine rendering")
         if len(self._xyz) != len(self.deformation_graph.gaussian_node_indices):
             raise RuntimeError("Fixed node associations require unchanged Gaussian topology")
-        return self.node_mlp(self.deformation_graph.node_xyz, time)
+        values = self.node_mlp(self.deformation_graph.node_xyz, time)
+        if hasattr(self.graph_motion_residual, 'initialize_transforms'):
+            values = self.graph_motion_residual.initialize_transforms(values)
+        return values
+
+    def _query_node_motion(self, time):
+        base_translation, rotation, scale = self._query_base_node_motion(time)
+        if self.graph_motion_residual is not None:
+            translation, _ = self.graph_motion_residual(base_translation)
+        else:
+            translation = base_translation
+        return translation, rotation, scale
+
+    def initialize_graph_forward(self, path):
+        """Install the fixed repaired K4 and optional message-passing residual."""
+        mode = getattr(self.args, "graph_forward_mode", "none")
+        if mode not in ("g1", "g2", "g3", "g4"):
+            raise ValueError("graph_forward_mode must be g1, g2, g3 or g4")
+        payload = torch.load(path, map_location=self._xyz.device, weights_only=True)
+        if payload.get("format_version") != 1:
+            raise ValueError("Unsupported graph-forward reference format")
+        if (getattr(self.args, "graph_forward_adaptive", False) and
+                getattr(self.args, "adaptive_g3_state", "")):
+            # Resume local-grown G3 without reinstalling the original 2000 K4.
+            residual = self.graph_motion_residual
+            count = len(payload["canonical_node_xyz"])
+            edges = len(payload["trajectory_gated_edge_weights"])
+            if (mode != "g3" or residual is None or residual.mode != "g3" or
+                    not torch.equal(self.deformation_graph.node_xyz[:count], payload["canonical_node_xyz"]) or
+                    not torch.equal(residual.edge_indices[:, :edges], payload["surface_edge_indices"]) or
+                    not torch.equal(residual.edge_weights[:edges], payload["trajectory_gated_edge_weights"])):
+                raise ValueError("Adaptive G3 resume changed the frozen backbone/reference edges")
+            self.graph_forward_reference_data = payload
+            return
+        if not torch.equal(payload["canonical_node_xyz"], self.deformation_graph.node_xyz):
+            raise ValueError("Graph-forward canonical nodes differ from deformation graph")
+        current_indices = self.deformation_graph.gaussian_node_indices
+        current_weights = self.deformation_graph.gaussian_node_weights
+        is_original = (torch.equal(current_indices, payload["original_k4_indices"]) and
+                       torch.equal(current_weights, payload["original_k4_weights"]))
+        is_repaired = (torch.equal(current_indices, payload["graph_k4_indices"]) and
+                       torch.equal(current_weights, payload["graph_k4_weights"]))
+        if not is_original and not is_repaired:
+            raise ValueError("Current Gaussian K4 is neither reference original nor repaired K4")
+        if is_original:
+            self.deformation_graph = SparseDeformationGraph(
+                self.deformation_graph.node_xyz,
+                payload["graph_k4_indices"], payload["graph_k4_weights"])
+        self.graph_forward_changed_mask = payload["changed_mask"].to(self._xyz.device)
+        self.graph_forward_reference_data = payload
+        if mode in ("g2", "g3", "g4"):
+            weights_key = ("surface_edge_weights" if mode == "g2" else
+                           "trajectory_gated_edge_weights")
+            if self.graph_motion_residual is None:
+                self.graph_motion_residual = GraphMotionResidual(
+                    payload["canonical_node_xyz"], payload["surface_edge_indices"],
+                    payload[weights_key], self.args.graph_forward_hidden_dim,
+                    self.args.graph_forward_seed, mode,
+                    getattr(self.args, "graph_forward_cancellation_alpha", 0.10)).to(self._xyz.device)
+            elif self.graph_motion_residual.mode != mode:
+                raise ValueError("Checkpoint graph residual mode differs from requested mode")
+        elif self.graph_motion_residual is not None:
+            raise ValueError("G1 must not contain a graph residual decoder")
+        if self.graph_motion_residual is not None:
+            self.graph_motion_residual.deterministic_aggregation = bool(
+                getattr(self.args, "graph_forward_deterministic", False))
+        print("Initialized graph-forward branch: mode={} changed_k4={:.6f} "
+              "fallback={:.6f} residual={}".format(
+                  mode, float(payload["audit"]["changed_ratio"]),
+                  float(payload["audit"]["fallback_ratio"]),
+                  self.graph_motion_residual is not None), flush=True)
+        if self.graph_motion_residual is not None:
+            print("Graph deterministic aggregation={} (rasterizer unchanged)".format(
+                self.graph_motion_residual.deterministic_aggregation), flush=True)
+
+    @torch.no_grad()
+    def graph_forward_diagnostics(self, times):
+        base_rows, residual_rows, final_rows = [], [], []
+        for time_value in times:
+            base, _, _ = self._query_base_node_motion(time_value)
+            if self.graph_motion_residual is None:
+                final, residual = base, torch.zeros_like(base)
+            else:
+                final, residual = self.graph_motion_residual(base)
+            base_rows.append(base)
+            residual_rows.append(residual)
+            final_rows.append(final)
+        base = torch.stack(base_rows)
+        residual = torch.stack(residual_rows)
+        final = torch.stack(final_rows)
+        result = residual_statistics(base, residual)
+        motion = final.norm(dim=-1).flatten()
+        result["motion"] = {
+            "median": float(motion.median()),
+            "p90": float(torch.quantile(motion, .9)),
+            "p95": float(torch.quantile(motion, .95)),
+            "max": float(motion.max()),
+        }
+        if self.graph_motion_residual is not None and self.graph_motion_residual.mode == "g4":
+            raw = torch.stack([
+                self.graph_motion_residual.decoder(
+                    self.graph_motion_residual.aggregate(value)) for value in base])
+            norms = base.norm(dim=-1, keepdim=True)
+            unit = base / norms.clamp_min(1e-8)
+            parallel = (raw * unit).sum(-1)
+            active = ((parallel < -self.graph_motion_residual.cancellation_alpha * norms.squeeze(-1)) &
+                      (norms.squeeze(-1) > 1e-8))
+            result["motion_guard"] = {
+                "alpha": self.graph_motion_residual.cancellation_alpha,
+                "active_fraction": float(active.float().mean()),
+                "correction_mean": float((residual - raw).norm(dim=-1).mean()),
+                "raw_residual_ratio_p95": float(torch.quantile(
+                    (raw.norm(dim=-1) / norms.squeeze(-1).clamp_min(1e-8)).flatten(), .95)),
+            }
+        return result
 
     def deform_from_nodes(self, time):
-        return self.deformation_graph.blend(*self._query_node_motion(time))
+        values = self._query_node_motion(time)
+        if hasattr(self.graph_motion_residual, 'blend_gaussians'):
+            return self.graph_motion_residual.blend_gaussians(self.deformation_graph, values)
+        dx, dr, ds = self.deformation_graph.blend(*values)
+        if self.surface_children is not None:
+            dx = self.surface_children.apply(dx, time)
+        return dx, dr, ds
 
     def node_positions_at_time(self, time):
         """World-space deformation-node centers for node-level regularizers."""
@@ -163,9 +292,45 @@ class GaussianModel:
               f"M={len(self.deformation_graph.node_xyz)} K={k} "
               f"max_degree={self.node_arap_graph.neighbor_indices.shape[1]}")
 
+    def initialize_gaussian_isometry_graph(self, candidate_indices=None, k=None,
+                                           minimum_degree=None):
+        """Build the fixed surface-aware graph used only by E2."""
+        if self.deformation_graph is None:
+            raise RuntimeError("Initialize deformation nodes before Gaussian isometry")
+        candidate_indices = (self.closest_point_indices if candidate_indices is None
+                             else candidate_indices)
+        k = int(k if k is not None else self.args.local_isometry_k)
+        minimum_degree = int(minimum_degree if minimum_degree is not None else
+                             self.args.local_isometry_min_degree)
+        self.gaussian_isometry_graph = LocalGaussianIsometryGraph.build(
+            self._xyz.detach(), candidate_indices,
+            self.deformation_graph.gaussian_node_indices,
+            candidate_k=k, minimum_degree=minimum_degree)
+        stats = self.gaussian_isometry_graph.graph_statistics()
+        print("Initialized fixed local Gaussian-isometry graph: " +
+              str(stats), flush=True)
+
+    def load_node_edge_graph(self, path):
+        payload = torch.load(path, map_location=self._xyz.device, weights_only=True)
+        graph = NodeEdgeConsistencyGraph.from_state_dict_payload(
+            payload, device=self._xyz.device)
+        if not torch.equal(graph.canonical_xyz, self.deformation_graph.node_xyz):
+            raise ValueError("Node-edge graph canonical nodes differ from deformation graph")
+        self.node_edge_graph = graph
+        degree = graph.degree.float()
+        print("Loaded fixed node-edge graph: topology={} edges={} degree_mean={:.3f} "
+              "degree_min={} degree_max={}".format(
+                  graph.topology, graph.edge_indices.shape[1], float(degree.mean()),
+                  int(degree.min()), int(degree.max())), flush=True)
+
     def deform_geometry_from_nodes(self, time):
         node_motion = self._query_node_motion(time)
-        dx, dr, ds = self.deformation_graph.blend(*node_motion)
+        if hasattr(self.graph_motion_residual, 'blend_gaussians'):
+            dx, dr, ds = self.graph_motion_residual.blend_gaussians(self.deformation_graph, node_motion)
+        else:
+            dx, dr, ds = self.deformation_graph.blend(*node_motion)
+        if self.surface_children is not None:
+            dx = self.surface_children.apply(dx, time)
         if self.args.no_dx:
             xyz = self._xyz
         elif self.args.node_position_mode == "local_frame":
@@ -506,7 +671,20 @@ class GaussianModel:
                 lr = self.deformation_scheduler_args(iteration)
                 param_group['lr'] = lr
                 # return lr
-                
+
+            elif param_group["name"] in ("graph_residual", "surface_children"):
+                param_group['lr'] = self.deformation_scheduler_args(iteration)
+
+    def add_graph_residual_optimizer_group(self):
+        if self.graph_motion_residual is None:
+            return
+        if any(group.get("name") == "graph_residual" for group in self.optimizer.param_groups):
+            return
+        self.optimizer.add_param_group({
+            "params": list(self.graph_motion_residual.parameters()),
+            "lr": 0.0,
+            "name": "graph_residual",
+        })
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -558,6 +736,25 @@ class GaussianModel:
             self.node_arap_graph = (None if arap_state is None else
                 CanonicalNodeARAPGraph.from_state_dict_payload(
                     arap_state, device=self._xyz.device))
+            isometry_state = state.get("gaussian_isometry_graph")
+            self.gaussian_isometry_graph = (None if isometry_state is None else
+                LocalGaussianIsometryGraph.from_state_dict_payload(
+                    isometry_state, device=self._xyz.device))
+            node_edge_state = state.get("node_edge_graph")
+            self.node_edge_graph = (None if node_edge_state is None else
+                NodeEdgeConsistencyGraph.from_state_dict_payload(
+                    node_edge_state, device=self._xyz.device))
+            graph_forward_state = state.get("graph_motion_residual")
+            self.graph_motion_residual = (None if graph_forward_state is None else
+                GraphMotionResidual.from_state_dict_payload(
+                    graph_forward_state, device=self._xyz.device))
+            from utils.surface_children import SurfaceChildren
+            child_state = state.get("surface_children")
+            self.surface_children = (None if child_state is None else
+                SurfaceChildren.from_payload(child_state, self._xyz.device))
+            changed_mask = state.get("graph_forward_changed_mask")
+            self.graph_forward_changed_mask = (None if changed_mask is None else
+                                                changed_mask.to(self._xyz.device))
         elif self.deformation_mode == "node":
             raise FileNotFoundError(f"Missing fixed graph checkpoint: {node_path}")
         
@@ -603,6 +800,18 @@ class GaussianModel:
                 "geometry_regularizer", "arap_weight", "arap_k",
                 "arap_eval_k", "arap_seed", "experiment_seed",
                 "canonical_laplacian_weight", "reset_fine_rng",
+                "local_isometry_weight", "local_isometry_k",
+                "local_isometry_min_degree", "local_isometry_temporal_window",
+                "local_isometry_seed",
+                "node_edge_graph_reference", "node_edge_weight",
+                "node_edge_start_iteration", "node_edge_seed",
+                "node_edge_gradient_audit_iterations",
+                "graph_forward_mode", "graph_forward_reference",
+                "graph_forward_hidden_dim", "graph_forward_seed",
+                "graph_forward_monitor_iterations",
+                "graph_forward_cancellation_alpha", "graph_forward_motion_reference",
+                "graph_forward_deterministic",
+                "surface_graph_refine", "surface_child_mode",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
                         "appearance_graph": (None if self.appearance_graph is None else
@@ -610,6 +819,18 @@ class GaussianModel:
                         "mlp": self.node_mlp.state_dict(),
                         "node_arap_graph": (None if self.node_arap_graph is None else
                                             self.node_arap_graph.state_dict_payload()),
+                        "gaussian_isometry_graph": (
+                            None if self.gaussian_isometry_graph is None else
+                            self.gaussian_isometry_graph.state_dict_payload()),
+                        "node_edge_graph": (
+                            None if self.node_edge_graph is None else
+                            self.node_edge_graph.state_dict_payload()),
+                        "graph_motion_residual": (
+                            None if self.graph_motion_residual is None else
+                            self.graph_motion_residual.state_dict_payload()),
+                        "graph_forward_changed_mask": self.graph_forward_changed_mask,
+                        "surface_children": (None if self.surface_children is None else
+                                             self.surface_children.payload()),
                         "config": {key: getattr(self.args, key) for key in node_config_keys}},
                        os.path.join(path, "deformation_nodes.pth"))
         if self.appearance_model is not None:

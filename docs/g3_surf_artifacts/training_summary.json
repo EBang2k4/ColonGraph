@@ -1,0 +1,9 @@
+{
+  "color_model": "node_residual_mlp",
+  "coarse_iterations": 100,
+  "fine_iterations": 30000,
+  "coarse_duration_s": 11.596397579880431,
+  "fine_duration_s": 4836.604091548128,
+  "total_training_duration_s": 4859.016512335977,
+  "peak_vram_mb": 4016.740234375
+}

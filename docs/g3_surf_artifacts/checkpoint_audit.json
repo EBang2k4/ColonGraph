@@ -1,0 +1,65 @@
+{
+  "pass": true,
+  "checks": {
+    "mode_valid": true,
+    "nodes_2000": true,
+    "geometry_k4_repaired_exact": true,
+    "geometry_weights_repaired_exact": true,
+    "appearance_k4_original_exact": true,
+    "appearance_weights_original_exact": true,
+    "canonical_nodes_common_exact": true,
+    "knn99_reference_exact": true,
+    "arap_off": true,
+    "node_edge_off": true,
+    "isometry_off": true,
+    "canonical_laplacian_off": true,
+    "adaptive_nodes_off": true,
+    "residual_decoder_present": true,
+    "residual_mode_exact": true,
+    "residual_topology_exact": true,
+    "residual_weights_exact": true,
+    "reload_gaussian_tensors_exact": true,
+    "reload_node_mlp_exact": true,
+    "reload_appearance_exact": true,
+    "reload_graph_residual_exact": true,
+    "reload_render_close_1e-3": true
+  },
+  "mode": "g3",
+  "iteration": 30000,
+  "reload_max_abs_error": 0.00034624338150024414,
+  "diagnostics": {
+    "base_norm": {
+      "mean": 78.73140716552734,
+      "median": 66.68913269042969,
+      "p90": 144.360107421875,
+      "p95": 169.10523986816406,
+      "max": 239.75814819335938,
+      "finite_fraction": 1.0
+    },
+    "graph_residual_norm": {
+      "mean": 2.1409902572631836,
+      "median": 1.7882075309753418,
+      "p90": 4.143942356109619,
+      "p95": 5.085610389709473,
+      "max": 24.041488647460938,
+      "finite_fraction": 1.0
+    },
+    "graph_residual_ratio": {
+      "mean": 0.03404175490140915,
+      "median": 0.025021107867360115,
+      "p90": 0.07204719632863998,
+      "p95": 0.0926583856344223,
+      "max": 0.4062371850013733,
+      "finite_fraction": 1.0
+    },
+    "motion": {
+      "median": 67.42279052734375,
+      "p90": 144.8258819580078,
+      "p95": 169.3562774658203,
+      "max": 235.28016662597656
+    }
+  },
+  "changed_k4": 19,
+  "changed_k4_ratio": 5.212620089878328e-05,
+  "checkpoint_bytes": 227064583
+}

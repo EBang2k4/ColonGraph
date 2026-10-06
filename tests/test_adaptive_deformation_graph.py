@@ -61,6 +61,31 @@ def _config(**kwargs):
 
 
 class AdaptiveDeformationGraphTests(unittest.TestCase):
+    def test_split_rejection_counters_distinguish_shock_and_overlap(self):
+        affected = torch.tensor([True, True, False, False])
+        disjoint = torch.tensor([False, False, True, False])
+        overlapping = torch.tensor([False, True, False, False])
+
+        self.assertEqual(
+            AdaptiveNodeManager._split_rejection_flags(2.0, 1.0, affected, disjoint),
+            (True, False, 0))
+        self.assertEqual(
+            AdaptiveNodeManager._split_rejection_flags(0.5, 1.0, affected, overlapping),
+            (False, True, 1))
+        self.assertEqual(
+            AdaptiveNodeManager._split_rejection_flags(2.0, 1.0, affected, overlapping),
+            (True, True, 1))
+
+    def test_depth_metrics_report_normalized_split_delta_inputs(self):
+        depth = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+        gt = torch.tensor([[1.0, 2.0], [2.0, 4.0]])
+        metrics = AdaptiveNodeManager._depth_metrics(depth, gt)
+        self.assertEqual(metrics["valid_pixels"], 4)
+        self.assertAlmostEqual(metrics["valid_fraction"], 1.0)
+        self.assertAlmostEqual(metrics["raw_mse"], 0.25)
+        self.assertAlmostEqual(metrics["normalized_mse"], 0.015625)
+        self.assertAlmostEqual(metrics["normalized_l1"], 0.0625)
+
     def test_statistics_use_weighted_k4_support(self):
         with tempfile.TemporaryDirectory() as path:
             model = _model()

@@ -1,5 +1,19 @@
 # ColonSplat: Reconstruction of Peristaltic Motion in Colonoscopy with Dynamic Gaussian Splatting  
 
+## G3-Surf backup baseline
+
+This branch packages the fixed **G3-Surf + B1-bbox + R6 eta=0.5** baseline:
+2,000 nodes, frozen surface KNN6 topology/trajectory gate, geometry K4 and a
+separate fixed appearance K4. No adaptive nodes or r16/Rank4 appearance.
+Recorded `c1_sigmoid2_t4_v4` result: PSNR **27.0571**, SSIM **0.7027**,
+LPIPS-Alex **0.5409**, normalized Depth MSE **0.00213812**.
+
+See [baseline protocol, artifacts and run instructions](docs/g3_surf_baseline.md).
+`python tools/run_g3_surf_baseline.py train` only prints a dry-run command;
+training requires external checkpoint/reference artifacts and `--execute`.
+Datasets/checkpoints are not uploaded. The older baseline sections below
+describe ancestor revisions and are not the G3-Surf protocol.
+
 ## Clone repository
 
 ```bash

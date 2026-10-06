@@ -60,6 +60,8 @@ class ModelParams(ParamGroup):
         self.mode = 'monocular'
         self.no_fine = False
         self.init_pts = 200_000
+        # DynamicColon only; historical provided-PLY path remains the default.
+        self.dynamic_point_initialization = "provided_ply"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -98,6 +100,44 @@ class ModelHiddenParams(ParamGroup):
         self.arap_eval_k = 8
         self.arap_seed = 1907
         self.arap_gradient_audit_iterations = "2000,5000,10000"
+        self.local_isometry_weight = 0.0
+        self.local_isometry_k = 12
+        self.local_isometry_min_degree = 4
+        self.local_isometry_temporal_window = 4
+        self.local_isometry_seed = 2718
+        self.node_edge_graph_reference = ""
+        self.node_edge_weight = 0.0
+        self.node_edge_start_iteration = 2000
+        self.node_edge_seed = 31415
+        self.node_edge_gradient_audit_iterations = "2000,5000,10000,30000"
+        self.fine_warmup_reference = ""
+        self.fine_warmup_state = ""
+        self.fine_stage_state_save = ""
+        # Opt-in exact causal branchpoint, after the 5k Adam step, BEFORE split.
+        self.pre_split_branchpoint_stop = ""
+        self.rcap_reference = ""
+        self.connectivity_ablation_audit = False
+        # G1-G3: E4 connectivity participates in the deformation forward pass,
+        # never as an auxiliary graph loss.
+        self.graph_forward_mode = "none"
+        self.graph_forward_reference = ""
+        self.graph_forward_hidden_dim = 64
+        self.graph_forward_seed = 4242
+        self.graph_forward_monitor_iterations = "5000,10000,20000,30000"
+        self.graph_forward_cancellation_alpha = 0.10
+        # Graph reductions only; does not alter the custom rasterizer/backward.
+        self.graph_forward_deterministic = False
+        self.graph_forward_motion_reference = ""
+        # Opt-in G3 adaptive study; defaults preserve every fixed-graph run.
+        self.graph_forward_adaptive = False
+        self.surface_graph_refine = False
+        self.surface_child_mode = "none"  # none / control / adaptive / shadow
+        self.adaptive_g3_score = "current"
+        self.adaptive_g3_placement = "centroid"
+        self.adaptive_g3_state = ""
+        self.adaptive_g3_admission = "legacy"
+        self.adaptive_g3_signal = "legacy"
+        self.adaptive_g3_quota_reference = ""
         # Resets only the fine-stage sampling RNG, after the common untrained
         # initialization has been restored.
         self.experiment_seed = 0

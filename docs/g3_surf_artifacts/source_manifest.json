@@ -1,0 +1,225 @@
+{
+  "source_head": "eb2b4ce7d49fcdb4442099a62083508ac82024e4",
+  "source_worktree": "experiment/adaptive-deformation-graph (dirty runtime snapshot)",
+  "runtime_copied_bit_exact": true,
+  "runtime_files": {
+    "tests/test_connectivity_ablation.py": "7512df636d4e85336d13af7137286255e4c04978733dc94b28daa0558e4ddc8b",
+    "tests/test_gaussian_isometry.py": "cc5ab72d148cc394901e0610a87fdf01aafba0b04ca0cf34e1ce02bb85b29c7f",
+    "tests/test_graph_determinism.py": "a0d3a6401acfc23e276e481936bc42de83a45ee85de75c66d5a6fcd548507486",
+    "tests/test_graph_forward.py": "2909aeb25ac6fc75807d1e76893bdc94f219f848fc017824f64cd9e9dc71aa8b",
+    "tests/test_node_edge_graph.py": "1ab3a4e7accc2f2f0967d754cb8958f1bc2ef07efbfb93d9bed64cdb470d0008",
+    "tools/audit_graph_forward_checkpoint.py": "d32d30824ed9f18bc4d2cacab261c90747173d7c128e64ac69f6741c656898d0",
+    "tools/build_graph_forward_reference.py": "6eb3dbff7bfd746e8a03b13904b1d714c4f0640ed012a4935ad3d94a25c8420f",
+    "tools/build_node_connectivity_graphs.py": "8e4ee5390dc530398a6c76983bcb6f3d7d7b09bfdcda5066e9439e1cedbc4d44",
+    "tools/prepare_connectivity_ablation.py": "e4c450ec5da14dacfffcc02989560390c964c8da018e72950a8710d2b107deb2",
+    "utils/adaptive_g3_graph.py": "0ed059ee3e5b24d89653a867635d56bcb13549bf0dde9aaceb72e266a4582720",
+    "utils/candidate_expansion.py": "56cf0ba3288ae812e7eda4cbd8b41d075c8bb36c8a4f0d0fbb40b187f39e4352",
+    "utils/capacity_split.py": "73c5189ef9a246bc9b0c80da067cce221a39bf615ae872ba51c136ed54bca7dd",
+    "utils/connectivity_ablation.py": "ed0edad0a65e0923cb3b1e6a864dd576061e9d863b785c72a4e019e2a73bf18b",
+    "utils/exact_split_branchpoint.py": "c43c779ab782de962205102d3183c94f08129f0494e426a24f81f2f5d02b7739",
+    "utils/gaussian_isometry.py": "b55d499e35c039aa37df4e4767df6ae7cf4ace2b7284b7de5bef9225ea1360f0",
+    "utils/graph_forward.py": "1ec83f4ed0236ec5fb246e24913e6baf572aed70924e9bdc767f191f98be77a7",
+    "utils/motion_capacity_audit.py": "16047875a07fa0ae622c0a838bf4e75417a2f4a87601a59315a387766f0a2a54",
+    "utils/node_edge_graph.py": "60ea26a68c2504b9843fd3082af76674b5c8abaa1a118f68f28699721e0f0d08",
+    "utils/persistent_split.py": "0e040afd40aab1dcdb43685c1f39cb9dc44f4d947ff491a736b916ea294b25ae",
+    "utils/rgbd_initialization.py": "74883c972fd4e081fecb3b66333b3029b3d566332d34c53afa4bf4c62fef65c5",
+    "utils/split_signal_audit.py": "c6c7588e286174f9f309b1f1ac90c0727cdd4f18f4c7aecc7658aa7a549c26df",
+    "utils/surface_children.py": "23e3c73be2a54294c3ca72cce121baf3bb5e42ce30284a6d2ef40a8785531f63",
+    "utils/surface_graph_refine.py": "b78ee21fa38d4066e4438101066ba75eaece9388a17ac6c29b380b97e88f51eb",
+    "utils/underres_split.py": "d8221641d99e0d4db7254c8c2cd673677ef9dd646a9d93750f6f230d02d947d6",
+    "arguments/__init__.py": "27514744e982051680d3188f417300f53830bd6715e1a253a58d6f7a85d9c5df",
+    "gaussian_renderer/__init__.py": "1760bcbbb3783e8cfef07b22c07887ed30aea3e9293a5788485e0eee83f2eaf2",
+    "gaussian_renderer/network_gui.py": "7e392b8122a8e1359b4550769eac06190806a8c2eeb7f5aa7cbd025738dedf89",
+    "lpipsPyTorch/__init__.py": "a657ce7355782eb970f95fd0d2e26eec5b9023212d2b655814da6e15b70510b4",
+    "lpipsPyTorch/modules/lpips.py": "3bece0b9cf9943af5b043026458819d259df9bfe7c2a1d3ffc6c905e7e5aa2b4",
+    "lpipsPyTorch/modules/networks.py": "dfa6f152b0e3fbc23ac3bfaea52b46e9473e64ad539ea22ab030c57af51c7f14",
+    "lpipsPyTorch/modules/utils.py": "1bd4a7d4e7b43215497675ed852936fe4f27e7ea3068afe0b0e1f7cfb6c48570",
+    "metrics.py": "9120fe4f22472be35a591663dd6add0ddfe26d71d91377e590e27a4b9461a919",
+    "pre_dam_dep.py": "be40f443bf44ad3b2db4cd78c9f562b022ddd0784a296c3452fda9382391cd82",
+    "prepare_depth.sh": "db1a2cf8c8bc8db267157a496f1c4750a28c368d2fb021edf623cca5a4a1a72c",
+    "preprocess_endo4dgx.py": "45cbf901a961e0d0668d55242d16530f61cf2d0e4cee4dfafae06fcddd526ee5",
+    "render.py": "0e7e5882adeb1d456bad1d4af94b79c0cd8285517ef948040ffefddba1ac7903",
+    "render_custom_lookat_cameras.py": "81e5e859a6d0731167a1649519120c235096db4403467cffea84c7ad74b79365",
+    "render_custom_test_trajectory.py": "697eb1ca4eaed3228becb0def2c17f2e2fd2c7d5b7c1d3c3a2dace1b0c3baee3",
+    "render_lookat_cameras.py": "d74d922726df08c7e283ca433bf89e6852d90fdb1e343c704470f7f0d1b9d791",
+    "render_time_shift.py": "ec360cf1fc12dcab2aedb0b8e14ad34c3a7b99a9219b5744f1c0984579c3d34a",
+    "run.sh": "7348052ec67749b028dce82d5018e525c71d5e0ba347b916bdb7a9fca113454b",
+    "run_a_eta05.sh": "e9f9e306f011d0846270aa2cd14954b57f70c22b94c973debe4537ef07a02977",
+    "run_adaptive_deformation_graph.sh": "8193f483153ec0d9c508baa8bf531f792dffe6e067f258641b0bdb68262e53bf",
+    "run_adaptive_followup.sh": "4178286612bce31459101ffc84a1228f3f0e91feb4bdf53a800405e392bc53f8",
+    "run_arap_experiment.sh": "0107c9181e8576184898a8c73ef061436e297d32b8b1199db91e4861a7153d4d",
+    "run_arap_fixed_phase.sh": "abfbf8cadfbf99b48817025fd13c02203eeb87625cb6bf24ee5d6f4b91f7739f",
+    "run_arap_revised_10k.sh": "0aa8701e68ac03c60bfe812879e116cff0a57a87877022cc94732f3fb5b53207",
+    "run_arap_revised_phase.sh": "2556e8f9d1320fde2cd4a0f5daf639999419a0eb453360940be25b22c0dee198",
+    "run_c_geometry_only_eta05.sh": "bc9c03f6b34c4ecaec9e6e845580547993f8b1dcdb4b926155fe360ca01dc51c",
+    "run_c_split_eta05.sh": "b399a97512797370158aaa75164e9676590e0704d187d1f66d8e72029d445872",
+    "run_custom_ds.sh": "8219e9ef11441e626be3c631bcda543a4a8d2b858ee35781ca51b6fb4c826a7a",
+    "run_depth_gradient_weighted_fps.sh": "eafdcf8ab48d298e9ae5d78f58bb31719124fc01dfb9131dab18e6bcbc69262d",
+    "run_fps_plus_importance.sh": "56a44a4458ecee916a5cd0fd47d1ae19027ae9c1d7ef780fde527d8cfeb2ca70",
+    "run_joint_b1_bbox_r6.sh": "f5c1dbd21a67e85c732f68486fb917460195aaf22f634082a6089b3d1c3c9329",
+    "run_sparse_nodes.sh": "c8e1b741026176b81eacb68efcd9fe93fb8ae0eee8983fe918428b91c9f774f3",
+    "run_split_mechanism_prune_late.sh": "28aa90475876c56a49f43a8a6ba2f819ec1a5401166ac7a203736620e134315c",
+    "run_weighted_fps_alpha_sweep.sh": "c3b521fa5a0e92cd9cca4badabe83be0aa34852f69ea1bf0fa6fe77baa513c3b",
+    "run_weighted_fps_r6.sh": "6fb5b8adc69b3944922c27eec7f39ff047a9edc98e7d206bac0d1b03dd9ed22e",
+    "scene/__init__.py": "27ae8929b161a2b52e3a7fbf4d8aeb2fdd2f576f90f751303f10201c69359145",
+    "scene/cameras.py": "b9022dfa7a4f956b078f96538f99009c30ce8c1bba2a2a907c02891fa4bf9561",
+    "scene/colmap_loader.py": "73a2e6223ae444166f6d58a8ca3a6f74637c68d8c8d6361ffb9bd8dfeb3e0522",
+    "scene/dataset_readers.py": "8214c63a5de919539dff18f954bac4d08a842ce4f5776b01f3c7a226ba29cab2",
+    "scene/deformation.py": "fdceff46261ad29726d43579940a5e6963c39d61db20505ba8778c1513ba5a63",
+    "scene/deformation_graph.py": "f5c8a556da1b98cd0c58a294ca86b52120b288b919ac2a30f69a5871d9480f84",
+    "scene/endo_loader.py": "48dfaeac304aaf85236901becb82ba6c75f2fa9c2cce2f58244e0b76ece73b02",
+    "scene/gaussian_model.py": "797580fb139e3709ab3fd560f0916ba65e0bfe6616e0cb0136cec9a95f81b29a",
+    "scene/hexplane.py": "0c69a5921fdf057677a83bc6476c81f0e8193261781601b16bbe8db9a5d87165",
+    "scene/regulation.py": "990293a020cf43a1d7ef9df66941dc8535ad8d2f59c91374673102b4be8c9bf1",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/auxiliary.h": "4e2325253243af891ea40a70d88878881e7dea38f6f4eba00fb43ebb02fe3a43",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/backward.cu": "3cab9e138c968b0a74bed8179781f5bfd0437c4a64ea46e2e9c4f3b6c3675b30",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/backward.h": "0336a3b53b4e682eda61d8b40d1ec4f771ba9d197afd6b17e2d18400fff9720b",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/config.h": "86d90fe26989e5a991104842961341d1bcb4374d5068dcb2a56d63a9017f8d65",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/forward.cu": "6d24dd945028686d84f17b5cc313073624d029f53232f13ca4f5a0372ceee9da",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/forward.h": "c4f369e19899a14231a880229d6c1dbe9174e6b4e476adca99cd4a40ff2393c8",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/rasterizer.h": "53f0915f0563e1bd0e8500cc81e91c9df3b6eb3187e1a1baad1e5a81a83a925f",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/rasterizer_impl.cu": "10ab4d9f02804bc552eea102e0aaa5a95024122cb9780cb568cc6f572ce213f0",
+    "submodules/diff-gaussian-rasterization-radegs/cuda_rasterizer/rasterizer_impl.h": "96b550f5ea8f22dc6e08bae0735c56d6e016843705beef255e4781659cf3ed50",
+    "submodules/diff-gaussian-rasterization-radegs/diff_gaussian_rasterization/__init__.py": "c1d57f2c1f3c64a31d8d9f289c7e6e965cb4639dfec370474a7fb18d1996c8ec",
+    "submodules/diff-gaussian-rasterization-radegs/ext.cpp": "32e33bc531826b2bc93db3fa6cdb8f8b65af254bf7b0efee14cbf854be32d494",
+    "submodules/diff-gaussian-rasterization-radegs/rasterize_points.cu": "20a8cf65b31fa4a3bed0a5eb408df4cd17828fba5c0045635efa3e302235ced9",
+    "submodules/diff-gaussian-rasterization-radegs/rasterize_points.h": "02fb222f4e6538dc178d251721b64efc8f8f9677c2c0028d91818155269ca5ed",
+    "submodules/diff-gaussian-rasterization-radegs/setup.py": "3bc4065d0ba274aca98a68930c8897f56110bd56f17c5d04c4b66c20bdf36e71",
+    "submodules/diff-gaussian-rasterization-radegs/third_party/stbi_image_write.h": "24d110c51536eea49b99b3ef9eb717e3587338358d41b2596d5b1d1c0b0a18b8",
+    "test_geometry.py": "e2a8cfa9e241a188bf8452eeb60fc0e14ec9a4095f21bba0fb893067c202753b",
+    "tests/test_adaptive_deformation_graph.py": "d3fe77166698bf8faf539e88a507ad038089695e9eda279f656dad09d7205c36",
+    "tests/test_node_arap.py": "0c1af109f62b0ae8a7be05b30d95056a3f25ee471e9bd8b8c492cd7ff96abf1a",
+    "tests/test_residual_appearance.py": "0f2725e9a5a034819ece1f9f59f099698c34e2c4d901e5412f219ab735f206d0",
+    "tests/test_sparse_nodes.py": "b474fe87de618516436bba25b92a28da0916067d9fece791d6430579177e2267",
+    "tests/test_weighted_fps.py": "4ffbf304824052746128a114c185c74742fb15649630905c91e6d5ee904fd529",
+    "tools/audit_adaptive_deformation.py": "4bf06cf1499a52f294ca306797d22d41ce58557fc263c8198b6c208f54062da9",
+    "tools/audit_arap_gradients.py": "ce6cbdcfcce839685fae45bc1f418a2c2fe401b3bf086cce1ba0f207c53b5020",
+    "tools/audit_bbox_run.py": "e19939d653246b667bc7326765947b26957a5d73970cb5dfb373752c0ba00d0a",
+    "tools/audit_fps_plus_importance.py": "f69d877cc176e1db785f5ac919172d7cd5712ae5f6dfc98df34db29aa0f9bf6c",
+    "tools/audit_full_adaptive.py": "76d48ea2d7aa4bfda5b66dfc49aada01eb632c491bd41e363305c961870f7984",
+    "tools/audit_joint_r6.py": "a72b32fd235c8b2b3e003152b101d53b5439c40f9489ba48c65c173098581753",
+    "tools/audit_matched_fixed.py": "d9991d8f025e54e27cd04ddab489ab586453dbc44c74270847eff0798f99f4a1",
+    "tools/audit_sparse_run.py": "c9847a496e3cac46263d744a249ae36f0770525623f5a9eba95cbc9ba05144b6",
+    "tools/audit_weighted_fps.py": "f1f58f6d8534c8989abca3e62796ec0db7c13c159e0c2895fa8e74e9f26c3aea",
+    "tools/benchmark_adaptive_render.py": "d55104c36ab31debb45ef5298173e0bdd33239df4070037038c843415884cd60",
+    "tools/create_arap_evaluation_graph.py": "e307e7226b2d5cdd35763e9e0ed59471f4530734ffeb278ee03a6020927479db",
+    "tools/evaluate_arap_checkpoint.py": "d0b7365748d316ccbcc2ab152a467cf8601d63542a6b6d798be951d8ecb0702b",
+    "tools/experiment_common.py": "e2dabc8a54e0d73132896b67856ce2787c83cb831e37774fe93e29cf627776f2",
+    "tools/plan_arap_calibration.py": "20735bd00e842da8ea703b91457b2dec0847e1c9b853df76b68249ce59f16d92",
+    "tools/plan_arap_revised.py": "5c121e671e84b747b4b1f8482cf3de3f22ded69044131ecd22d3367d0f468f2d",
+    "tools/profile_deformation.py": "6175b031da2deb2cb9ef1b0bbffeb166980719d0ae6ebed7a463fcc977b7f7e4",
+    "tools/refine_appearance.py": "679d8c2454fe762ea62683de6bdfff05b343759a93a461d589e3d1f7c71aff03",
+    "tools/refit_appearance_model.py": "bc4f85b22d055568b4ea6d97858595b130a4a3b562b3cf3a53b5d36fdbeedadf",
+    "tools/replay_adaptive_prune_gate.py": "f058da850976022efc759ff3e0ec75c28184e8d7fb44d15dcfd03902be9bc9ea",
+    "tools/replay_adaptive_split_gate.py": "df8aa1aca4b5951fb39a8416132d04f5717fcf508ba90e44b74d13419aff7f5b",
+    "tools/report_adaptive_deformation.py": "3aa02637d24df415fdb5779c2e89c4d64b64e08ba36e967e7fd09c2f50dfe9e4",
+    "tools/report_arap_fixed_seeds.py": "3ee2e309e8664df8dd83a28e33aa9569ba94647d1868fd7d5a93a43a55afa42e",
+    "tools/report_depth_gradient_weighted_fps.py": "8fc30568b952b9c2426deb5291819db6c7f50ed922baddd5ba017a5f7c1fb539",
+    "tools/report_eta05_split_comparison.py": "fa2ba4e3ae90331701808e49d91ecab1a9d1303787dc4d9722caa1e9c67d3215",
+    "tools/report_fps_plus_importance.py": "7049da53ea45d942c141c2b3c35d4f8a16c18e8b3a4bb8b56a2c06456218eafb",
+    "tools/report_geometry_only_split.py": "698cac1a426a0e742be8c1113044aa595fd01f018206a5c02629779fbf94b44f",
+    "tools/report_prune_late.py": "c4ae68765423011467a4941768fbfd04c29f3690cfc6cc09cd4bb5fb35cd84c6",
+    "tools/report_split_mechanism.py": "1a1b147173b3e1ca783f9eaa0adfc4d21be26b482fdfd80480ddafda1d5a8d32",
+    "tools/report_weighted_fps.py": "5526602fd7aa898fd967777e6919d30da8376ef78df55f549a18357551ecc441",
+    "tools/report_weighted_fps_sweep.py": "3b4264de514da505ff000bac5dc98dba30ac25fe16cd6e67b579ef2d16c35a76",
+    "train.py": "fa595e9c20f85550a7aa331dbcbf8ef439a37683be612a3ec8d53fc44cdea2c5",
+    "utils/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "utils/adaptive_deformation_graph.py": "aeef31c1d8d82c2129aceaac6d523ddf682c5fb9dc1835e53588765dfea72b67",
+    "utils/arap_utils.py": "0264d40fa014f99a068e96cad6e2ecf46886e56fe7a32898ac98885fce54b4d9",
+    "utils/arap_utils_ours.py": "18cb1cead0ae77b7e77877622736847fbe8816833c9ea10be1f955001221f7f7",
+    "utils/camera_utils.py": "550ca5c737675cef3a549b85c0ca89abd5c0e2a3cbfd0da578ee02a8edb226c8",
+    "utils/general_utils.py": "35960b26badf1f3f4211b47bc7fab86c73159a3504a2ffe93bc7b94b204e823b",
+    "utils/graphics_utils.py": "2dc70c3712fc172ddeb2842e498f661e8922a7cacd34707b435f77da7ead6e0e",
+    "utils/helper.py": "3ea4c57107e97bde50407e210ad3f50b7c0b036af36b7f5e62757daa8cc890e6",
+    "utils/image_utils.py": "0d93fdafe9729424b3806c90bbd2eb3d85873efa58d35cca42b93bf718fcc61f",
+    "utils/lookat_utils.py": "269fb763636516b9913b47674ff9459d248ad6839c7951cfc598fb693ed9f2ac",
+    "utils/loss_utils.py": "990f83f078ab1e13badea31788ee646deddfff50e3a048167f21195b81a1528c",
+    "utils/node_arap.py": "d767de9061f65be9381dd78baecad1a561b6e80c2b14c905b4e3cc30e1d2febc",
+    "utils/node_sampling.py": "6a0100c0317d925480ae5077f359e8c9de71aa7652fd964f39b88b80dd16a9ce",
+    "utils/params_utils.py": "c3692322d0073f46536d8605b27b21e48fe244dbb95089e1b878f5fdb9b2fdfb",
+    "utils/resnet_swag.py": "cca702847b9bb500fbb9686ac18b7b768fda25529ed18d6e8e0be6b039e69a05",
+    "utils/scene_utils.py": "49a3511fd91034762fc1736c6ff0e47390492a94c56571ed65bf7c4e4b80ab78",
+    "utils/sh_utils.py": "7d1ff267546390635e6d1f68c4f88c4a8b052482d5c9be1d32f06bc69e9a96e7",
+    "utils/system_utils.py": "be01c02d3118c5d53808bc04efccd00c35a705a43a87c3583ea2f4752bc48553",
+    "utils/timer.py": "d439b13e8cb134b10c8d65a524f7e0848b736e0d57162d657c75b6360fe03ec9"
+  },
+  "external_artifacts_not_in_git": {
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000/appearance.pth": {
+      "sha256": "c19be80707bc11259bc329e0f5089af8ebe8abdbbb43e758763c5c48c5841c14",
+      "bytes": 94820
+    },
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000/point_cloud.ply": {
+      "sha256": "d6757a3dabb7cdca0f448cdf9f3892bd0d52200788e06fb6de243edfe29b1db9",
+      "bytes": 24786413
+    },
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000/deformation_nodes.pth": {
+      "sha256": "9d13483bb795ee79d6c7c9a32c0e786ca07ade396f95322671a754e67bd839ab",
+      "bytes": 35772169
+    },
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000/deformation_table.pth": {
+      "sha256": "f396883f1b223b8a91a04fbe36a525ab661517205e52de89adfd5d07d6654bd8",
+      "bytes": 23329294
+    },
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000/deformation.pth": {
+      "sha256": "616415dd4476a924da3e578d9d220bc276688bed25ebd30037f934729ea34563",
+      "bytes": 143081887
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/point_cloud/iteration_2000/appearance.pth": {
+      "sha256": "3c0a7dc31e7d56b73faf1b675bb7406382a2bdd3a1e34f607f3ba71f941a3899",
+      "bytes": 94820
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/point_cloud/iteration_2000/point_cloud.ply": {
+      "sha256": "ad82599f0b53ed2fa6092d8af230252fa71cd97c33ec0b85c6e6831a762cc275",
+      "bytes": 24786413
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/point_cloud/iteration_2000/deformation_nodes.pth": {
+      "sha256": "c8edc1650ebd4639d39b81e45d9eb2c95d5d310a40627a2740ac0312122c958c",
+      "bytes": 35222204
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/point_cloud/iteration_2000/deformation_table.pth": {
+      "sha256": "2dd843dba8cdcc20a7de533746e076d1c60407613b794e83dd23811f84d3bccb",
+      "bytes": 23329294
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/point_cloud/iteration_2000/deformation.pth": {
+      "sha256": "616415dd4476a924da3e578d9d220bc276688bed25ebd30037f934729ea34563",
+      "bytes": 143081887
+    },
+    "output/baseline1_nodes2000/c1_sigmoid2_t4_v4/point_cloud/iteration_1/point_cloud.ply": {
+      "sha256": "fd159aabaf088dc441faad2a1e00242cb03ae242eaf29c9b20bd06fd80273c7c",
+      "bytes": 24786413
+    },
+    "output/baseline1_nodes2000/c1_sigmoid2_t4_v4/point_cloud/iteration_1/deformation_nodes.pth": {
+      "sha256": "823503df28fdb7db15dedd4cde145845e0ff30008d641486a776d925b8a48c0d",
+      "bytes": 17699673
+    },
+    "output/baseline1_nodes2000/c1_sigmoid2_t4_v4/point_cloud/iteration_1/deformation_table.pth": {
+      "sha256": "c073af397c7892252c10ac80924c75c46416842f2f006d3e03228aff60ef7e12",
+      "bytes": 23329294
+    },
+    "output/baseline1_nodes2000/c1_sigmoid2_t4_v4/point_cloud/iteration_1/deformation.pth": {
+      "sha256": "616415dd4476a924da3e578d9d220bc276688bed25ebd30037f934729ea34563",
+      "bytes": 143081887
+    },
+    "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/fine_state_30000.pth": {
+      "sha256": "d8d1f3f7bc7b4cd2583461ae1953b8fd59a59e02afad2d161fc0e9ce63aada52",
+      "bytes": 88091180
+    },
+    "output/node_connectivity_common_warmup/c1_sigmoid2_t4_v4/fine_state_2000.pth": {
+      "sha256": "645906dc0f75e20aac705fc6a67624bdf3e60dd91e89b9db232cba445ac43ae4",
+      "bytes": 88047163
+    },
+    "output/adaptive_deformation_matched_knn99.pth": {
+      "sha256": "87163ad7dba9f61fbaca0d4eb2fc88bec36b61d44733fb5c410b81ebab80fa49",
+      "bytes": 288685347
+    },
+    "output/g3_connectivity_ablation/c1_sigmoid2_t4_v4/references/G3-Surf.pth": {
+      "sha256": "902a012eb32759742bc642f176af3def8f9f0776f9088e9c1d51b79ff11707fd",
+      "bytes": 35959151
+    },
+    "output/persistent_split_study/c1_sigmoid2_t4_v4/fixed_g3_motion_seed1.json": {
+      "sha256": "b2fa8e27781c4c1fd2d9279eef59f39ab260323c7f3450c506d8d440c6e085da",
+      "bytes": 315
+    }
+  },
+  "checkpoint_source": "output/g3_connectivity_G3-Surf/c1_sigmoid2_t4_v4/point_cloud/iteration_30000"
+}

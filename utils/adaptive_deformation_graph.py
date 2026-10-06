@@ -130,14 +130,14 @@ def _replace_parameter_value(optimizer, module, name, value):
 
 
 class AdaptiveNodeManager:
-    def __init__(self, model, config: AdaptiveNodeConfig, output_dir: str):
+    def __init__(self, model, config: AdaptiveNodeConfig, output_dir: str, allow_grown=False):
         config.validate()
         if model.deformation_graph.gaussian_node_indices.shape[1] != 4:
             raise ValueError("adaptive graph requires K=4")
         if model.appearance_model is None or not hasattr(model.appearance_model, "node_appearance"):
             raise ValueError("adaptive graph requires R6 node appearance")
         if (len(model.deformation_graph.node_xyz) != 2000 and
-                config.mode != "prune_once"):
+                config.mode != "prune_once" and not allow_grown):
             raise ValueError("adaptive graph must start from exactly 2,000 FPS nodes")
         self.model = model
         self.config = config
@@ -295,6 +295,13 @@ class AdaptiveNodeManager:
         shock = (new_dx - old_dx).norm(dim=1)
         return affected, float(shock.mean()), float(shock.max())
 
+    @staticmethod
+    def _split_rejection_flags(shock_max, shock_limit, affected_candidate, occupied):
+        """Classify split safety failures without conflating their counters."""
+        shock_failed = bool(shock_max > shock_limit)
+        overlap_gaussians = int((affected_candidate & occupied).sum())
+        return shock_failed, overlap_gaussians > 0, overlap_gaussians
+
     @torch.no_grad()
     def _append_children(self, parents, positions):
         graph = self.graph
@@ -374,7 +381,7 @@ class AdaptiveNodeManager:
         row_by_id = {int(node_id): row for row, node_id in enumerate(self.node_ids.tolist())}
         sample_times = self.graph.node_xyz.new_tensor(self.motion_diagnostic_times)
         motion_bank = torch.stack([
-            self.model.node_mlp(self.graph.node_xyz, time)[0] for time in sample_times])
+            self._node_translation(time) for time in sample_times])
         records = []
         for pair in due:
             parent_row = row_by_id.get(pair["parent_id"])
@@ -619,6 +626,37 @@ class AdaptiveNodeManager:
                     LPIPS=float(lpips_loss(image, gt, lpips_model)))
 
     @staticmethod
+    def _depth_metrics(depth, gt_depth, mask=None):
+        """Float-space depth diagnostics matching the training normalization."""
+        depth = depth.detach().float()
+        gt_depth = gt_depth.detach().to(device=depth.device, dtype=depth.dtype)
+        if depth.shape != gt_depth.shape:
+            if depth.numel() != gt_depth.numel():
+                raise ValueError("rendered and ground-truth depth shapes differ")
+            gt_depth = gt_depth.reshape_as(depth)
+        valid = torch.isfinite(depth) & torch.isfinite(gt_depth) & (gt_depth > 0)
+        if mask is not None:
+            mask = torch.as_tensor(mask, device=depth.device).to(torch.bool)
+            if mask.shape != depth.shape:
+                if mask.numel() != depth.numel():
+                    raise ValueError("depth mask shape differs")
+                mask = mask.reshape_as(depth)
+            valid &= mask
+        if not valid.any():
+            return dict(valid_pixels=0, valid_fraction=0.0, raw_mse=None,
+                        normalized_mse=None, normalized_l1=None)
+        normalized_depth = (depth / depth[valid].max().clamp_min(1e-6)).clamp(0, 1)
+        normalized_gt = (gt_depth / gt_depth[valid].max().clamp_min(1e-6)).clamp(0, 1)
+        difference = normalized_depth[valid] - normalized_gt[valid]
+        return dict(
+            valid_pixels=int(valid.sum()),
+            valid_fraction=float(valid.float().mean()),
+            raw_mse=float((depth[valid] - gt_depth[valid]).square().mean()),
+            normalized_mse=float(difference.square().mean()),
+            normalized_l1=float(difference.abs().mean()),
+        )
+
+    @staticmethod
     def _distribution(value):
         value = value.detach().float().flatten()
         if not len(value):
@@ -627,6 +665,13 @@ class AdaptiveNodeManager:
         return dict(min=float(value.min()), p05=float(quantiles[0]),
                     median=float(quantiles[1]), p95=float(quantiles[2]),
                     max=float(value.max()), mean=float(value.mean()))
+
+    def _split_candidates(self, stats):
+        candidates = torch.where(stats["eligible"] & (stats["normalized"] >= self.config.split_z))[0]
+        return candidates[torch.argsort(stats["normalized"][candidates], descending=True, stable=True)]
+
+    def _node_translation(self, time):
+        return self.model.node_mlp(self.graph.node_xyz, time)[0]
 
     def adapt(self, iteration, camera, render_fn, pipe, background, lpips_model):
         stats = self.node_statistics(iteration)
@@ -650,14 +695,16 @@ class AdaptiveNodeManager:
         before = render_fn(camera, self.model, pipe, background, stage="fine")
         before_xyz = before["transformed_points"].detach().clone()
         before_metrics = self._metrics(before["render"].detach()[None], camera.original_image.cuda().float()[None], lpips_model)
+        before_depth_metrics = self._depth_metrics(
+            before["depth"], camera.original_depth.cuda().float(),
+            getattr(camera, "mask", None))
         split_enabled = self.config.mode in (
             "split_once", "split", "split_prune", "split_prune_conservative") or (
                 self.config.mode == "split_prune_late" and
                 iteration <= self.config.split_end)
-        candidates = torch.where(stats["eligible"] & (stats["normalized"] >= self.config.split_z))[0]
+        candidates = self._split_candidates(stats)
         if not split_enabled:
             candidates = candidates[:0]
-        candidates = candidates[torch.argsort(stats["normalized"][candidates], descending=True, stable=True)]
         room = max(0, self.config.max_nodes - len(self.graph.node_xyz))
         limit = min(self.config.max_splits, room)
         if self.config.mode == "split_once":
@@ -666,12 +713,20 @@ class AdaptiveNodeManager:
             candidates = candidates[:0]
         parents, positions, proposal_separations = [], [], []
         rejected = 0
-        rejected_shock = 0
+        rejected_shock_or_overlap = 0
+        rejected_by_shock = 0
+        rejected_by_overlap = 0
+        rejected_by_shock_only = 0
+        rejected_by_overlap_only = 0
+        rejected_by_shock_and_overlap = 0
         rejected_shock_maxima = []
+        shock_rejected_maxima = []
+        overlap_rejected_shock_maxima = []
+        overlap_rejected_gaussians = []
         predicted_shocks = []
         occupied = torch.zeros(len(self.model._xyz), device=self.model._xyz.device,
                                dtype=torch.bool)
-        old_node_dx = self.model.node_mlp(self.graph.node_xyz, camera.time)[0]
+        old_node_dx = self._node_translation(camera.time)
         shock_limit = self.config.max_split_shock_ratio * self.shock_reference_scale
         for parent in candidates.tolist():
             proposal = self._proposal(parent, stats)
@@ -689,9 +744,24 @@ class AdaptiveNodeManager:
                     continue
             affected_candidate, shock_mean, shock_max = self._candidate_shock(
                 parent, position, camera.time, old_node_dx)
-            if shock_max > shock_limit or (affected_candidate & occupied).any():
-                rejected_shock += 1
+            shock_failed, overlap_failed, overlap_gaussians = self._split_rejection_flags(
+                shock_max, shock_limit, affected_candidate, occupied)
+            if shock_failed or overlap_failed:
+                rejected_shock_or_overlap += 1
                 rejected_shock_maxima.append(shock_max)
+                if shock_failed:
+                    rejected_by_shock += 1
+                    shock_rejected_maxima.append(shock_max)
+                if overlap_failed:
+                    rejected_by_overlap += 1
+                    overlap_rejected_shock_maxima.append(shock_max)
+                    overlap_rejected_gaussians.append(overlap_gaussians)
+                if shock_failed and overlap_failed:
+                    rejected_by_shock_and_overlap += 1
+                elif shock_failed:
+                    rejected_by_shock_only += 1
+                else:
+                    rejected_by_overlap_only += 1
                 continue
             parents.append(parent); positions.append(position)
             proposal_separations.append(minimum_separation)
@@ -700,6 +770,10 @@ class AdaptiveNodeManager:
             if len(parents) == limit:
                 break
         suppressed = max(0, len(candidates) - len(parents)) if room == 0 else max(0, min(len(candidates), self.config.max_splits) - limit)
+        if rejected_shock_or_overlap != (
+                rejected_by_shock_only + rejected_by_overlap_only +
+                rejected_by_shock_and_overlap):
+            raise AssertionError("split rejection counters are inconsistent")
         parent_node_ids = [int(self.node_ids[p]) for p in parents]
         selected_parent_statistics = [
             {"node_id": int(self.node_ids[parent]),
@@ -804,6 +878,9 @@ class AdaptiveNodeManager:
         after = render_fn(camera, self.model, pipe, background, stage="fine")
         after_xyz = after["transformed_points"].detach()
         after_metrics = self._metrics(after["render"].detach()[None], camera.original_image.cuda().float()[None], lpips_model)
+        after_depth_metrics = self._depth_metrics(
+            after["depth"], camera.original_depth.cuda().float(),
+            getattr(camera, "mask", None))
         changed = (old_ids != self.node_ids[self.graph.gaussian_node_indices]).any(dim=1)
         if (changed & ~affected).any():
             raise AssertionError("adaptation changed K4 outside affected set")
@@ -822,11 +899,24 @@ class AdaptiveNodeManager:
                  "rejected_high_prune_error": rejected_high_prune_error,
                  "prunes_applied": len(pruned_node_ids),
                  "rejected_proposals": rejected,
-                 "rejected_by_shock_or_overlap": rejected_shock,
+                 "rejected_by_shock_or_overlap": rejected_shock_or_overlap,
+                 "rejected_by_shock": rejected_by_shock,
+                 "rejected_by_overlap": rejected_by_overlap,
+                 "rejected_by_shock_only": rejected_by_shock_only,
+                 "rejected_by_overlap_only": rejected_by_overlap_only,
+                 "rejected_by_shock_and_overlap": rejected_by_shock_and_overlap,
                  "shock_reference_scale": self.shock_reference_scale,
                  "shock_limit_world": shock_limit,
                  "rejected_shock_max_distribution": self._distribution(
                      torch.as_tensor(rejected_shock_maxima, device=self.model._xyz.device)),
+                 "shock_rejected_max_distribution": self._distribution(
+                     torch.as_tensor(shock_rejected_maxima, device=self.model._xyz.device)),
+                 "overlap_rejected_shock_max_distribution": self._distribution(
+                     torch.as_tensor(overlap_rejected_shock_maxima,
+                                     device=self.model._xyz.device)),
+                 "overlap_rejected_gaussians_distribution": self._distribution(
+                     torch.as_tensor(overlap_rejected_gaussians,
+                                     device=self.model._xyz.device)),
                  "predicted_split_shocks": predicted_shocks,
                  "parent_child_splits": split_pair_records,
                  "selected_parent_statistics": selected_parent_statistics,
@@ -836,7 +926,13 @@ class AdaptiveNodeManager:
                  "outside_affected_physical_k4_exact": True,
                  "outside_affected_weights_exact": True,
                  "shock_mean": float(shock.mean()), "shock_max": float(shock.max()),
-                 "metrics_before": before_metrics, "metrics_after": after_metrics}
+                 "metrics_before": before_metrics, "metrics_after": after_metrics,
+                 "depth_metrics_before": before_depth_metrics,
+                 "depth_metrics_after": after_depth_metrics,
+                 "depth_normalized_mse_delta": (
+                     None if before_depth_metrics["normalized_mse"] is None else
+                     after_depth_metrics["normalized_mse"] -
+                     before_depth_metrics["normalized_mse"])}
         self.save(os.path.join(self.output_dir, "adaptive_state_latest.pth"), iteration)
         return self._record(event)
 

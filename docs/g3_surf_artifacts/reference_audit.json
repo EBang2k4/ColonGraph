@@ -1,0 +1,25 @@
+{
+  "pass_": true,
+  "source": "common pre-G3 2k",
+  "nodes": 2000,
+  "k": 6,
+  "adaptive": false,
+  "trajectory_sigma": 2.728199005126953,
+  "gate_sigma_fixed": true,
+  "spatial_sigma_fixed": 9.383036613464355,
+  "surface_reference_numerically_unchanged": true,
+  "geometry_and_appearance_k4_identical": true,
+  "euclidean": {
+    "variant": "G3-Euc",
+    "directed_k": 6,
+    "symmetrization": "union, same as surface graph; degree may exceed 6",
+    "distance": "canonical Euclidean for neighbor selection ONLY",
+    "spatial_kernel": "frozen Surface geodesic RBF, same per-pair function in both branches",
+    "spatial_sigma": 9.383036613464355,
+    "trajectory_sigma": 2.728199005126953,
+    "trajectory_sigma_recalibrated": false,
+    "geometry_k4_recomputed": false,
+    "edge_count": 6472
+  },
+  "surface_edges": 6502
+}

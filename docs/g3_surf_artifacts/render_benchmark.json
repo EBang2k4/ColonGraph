@@ -1,0 +1,8 @@
+{
+  "iteration": 30000,
+  "test_frames": 36,
+  "repeats": 5,
+  "render_ms_per_frame": 12.763344997829861,
+  "render_fps": 78.34936689167526,
+  "peak_vram_mb": 504.6953125
+}

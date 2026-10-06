@@ -40,6 +40,11 @@ def collect(label, tag):
     if adaptive.exists() and (adaptive / "adaptive_events.jsonl").exists():
         events = [json.loads(line) for line in
                   (adaptive / "adaptive_events.jsonl").read_text().splitlines()]
+        split_breakdown_available = all(
+            "rejected_by_shock_only" in event and
+            "rejected_by_overlap_only" in event and
+            "rejected_by_shock_and_overlap" in event
+            for event in events)
         row.update({
             "trajectory": [{key: event.get(key) for key in
                             ("iteration", "nodes_before", "nodes_after", "splits", "prunes")}
@@ -52,6 +57,17 @@ def collect(label, tag):
                 event["changed_k4_percent"] for event in events) / len(events),
             "splits_suppressed_by_budget": sum(
                 event.get("splits_suppressed_by_budget", 0) for event in events),
+            "split_rejection_breakdown_available": split_breakdown_available,
+            "rejected_by_shock": (None if not split_breakdown_available else sum(
+                event["rejected_by_shock"] for event in events)),
+            "rejected_by_overlap": (None if not split_breakdown_available else sum(
+                event["rejected_by_overlap"] for event in events)),
+            "rejected_by_shock_only": (None if not split_breakdown_available else sum(
+                event["rejected_by_shock_only"] for event in events)),
+            "rejected_by_overlap_only": (None if not split_breakdown_available else sum(
+                event["rejected_by_overlap_only"] for event in events)),
+            "rejected_by_shock_and_overlap": (None if not split_breakdown_available else sum(
+                event["rejected_by_shock_and_overlap"] for event in events)),
             "prune_candidates": sum(event.get("prune_candidates", 0) for event in events),
             "rejected_low_redundancy": sum(
                 event.get("rejected_low_redundancy", 0) for event in events),
@@ -80,11 +96,18 @@ def main():
     for row in rows:
         if "trajectory" not in row:
             continue
+        rejection_summary = (
+            f"split reject shock-only/overlap-only/both="
+            f"{row['rejected_by_shock_only']}/{row['rejected_by_overlap_only']}/"
+            f"{row['rejected_by_shock_and_overlap']}"
+            if row["split_rejection_breakdown_available"] else
+            "split reject breakdown=unavailable (legacy combined log)")
         lines.append(
             f"- {row['label']}: splits={row['total_splits']}, prunes={row['total_prunes']}, "
             f"mean/max shock={row['shock_mean']:.6g}/{row['shock_max']:.6g}, "
             f"mean changed K4={row['changed_k4_percent_mean']:.4f}%, "
             f"budget-suppressed={row['splits_suppressed_by_budget']}, "
+            f"{rejection_summary}, "
             f"prune candidates={row['prune_candidates']}, "
             f"rejected redundancy/error={row['rejected_low_redundancy']}/"
             f"{row['rejected_high_prune_error']}.")

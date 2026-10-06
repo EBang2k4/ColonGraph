@@ -33,6 +33,7 @@ from utils.node_sampling import (CoarseGradientImportance, weighted_farthest_poi
                                  position_loss_gradient)
 from scene.deformation_graph import SparseDeformationGraph
 from utils.adaptive_deformation_graph import AdaptiveNodeConfig, AdaptiveNodeManager
+from utils.adaptive_g3_graph import AdaptiveG3NodeManager
 
 
 import lpips
@@ -81,6 +82,18 @@ def _append_r6_diagnostic(model_path, row):
         writer.writerow(row)
 
 
+def _append_node_edge_diagnostic(model_path, row):
+    path = os.path.join(model_path, "node_edge_diagnostics.jsonl")
+    with open(path, "a") as stream:
+        stream.write(json.dumps(row) + "\n")
+
+
+def _append_graph_forward_diagnostic(model_path, row):
+    path = os.path.join(model_path, "graph_forward_diagnostics.jsonl")
+    with open(path, "a") as stream:
+        stream.write(json.dumps(row) + "\n")
+
+
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
                          checkpoint_iterations, checkpoint, debug_from,
                          gaussians, scene, stage, tb_writer, train_iter, timer):
@@ -89,6 +102,28 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
     first_iter = 0
     gaussians.training_setup(opt)
+    fine_resume_state = (getattr(gaussians, "fine_resume_state", None)
+                         if stage == "fine" else None)
+    if fine_resume_state is not None:
+        if gaussians.surface_children is not None:
+            gaussians.add_graph_residual_optimizer_group()
+            from utils.surface_children import register_optimizer
+            register_optimizer(gaussians)
+        saved_group_count = len(fine_resume_state["optimizer"]["param_groups"])
+        current_group_count = len(gaussians.optimizer.param_groups)
+        if (gaussians.graph_motion_residual is not None and
+                saved_group_count == current_group_count + 1):
+            gaussians.add_graph_residual_optimizer_group()
+            current_group_count += 1
+        if saved_group_count != current_group_count:
+            if not (gaussians.graph_motion_residual is not None and
+                    saved_group_count == current_group_count):
+                raise ValueError("Fine optimizer groups do not match graph-forward branch")
+        gaussians.optimizer.load_state_dict(fine_resume_state["optimizer"])
+        gaussians.add_graph_residual_optimizer_group()
+        first_iter = int(fine_resume_state["iteration"])
+    else:
+        gaussians.add_graph_residual_optimizer_group()
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -114,6 +149,27 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     }
     arap_generator = torch.Generator(device="cpu").manual_seed(
         int(hyper.arap_seed) + 100003 * int(hyper.experiment_seed))
+    isometry_generator = torch.Generator(device="cpu").manual_seed(
+        int(hyper.local_isometry_seed) + 100003 * int(hyper.experiment_seed))
+    node_edge_audit_iterations = {
+        int(value) for value in str(hyper.node_edge_gradient_audit_iterations).split(",")
+        if value.strip()
+    }
+    node_edge_generator = torch.Generator(device="cpu").manual_seed(
+        int(hyper.node_edge_seed) + 100003 * int(hyper.experiment_seed))
+    graph_forward_monitor_iterations = {
+        int(value) for value in str(hyper.graph_forward_monitor_iterations).split(",")
+        if value.strip()
+    }
+    matched_motion_reference = None
+    if stage == "fine" and (hyper.graph_forward_mode == "g4" or hyper.graph_forward_adaptive):
+        with open(hyper.graph_forward_motion_reference) as stream:
+            motion_payload = json.load(stream)
+        if int(motion_payload["seed"]) != int(hyper.experiment_seed):
+            raise ValueError("Graph matched motion reference seed differs from run seed")
+        if hyper.graph_forward_adaptive and motion_payload.get("reference_mode") != "g3":
+            raise ValueError("Adaptive G3 motion safety must use matched fixed G3, not G0")
+        matched_motion_reference = motion_payload["motion_reference_p95"]
     adaptive_manager = None
     if stage == "fine" and hyper.adaptive_node_mode != "none":
         adaptive_config = AdaptiveNodeConfig(
@@ -141,13 +197,110 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             weight_threshold=hyper.adaptive_node_weight_threshold,
             max_split_shock_ratio=hyper.adaptive_node_max_split_shock_ratio,
         )
-        adaptive_manager = AdaptiveNodeManager(
-            gaussians, adaptive_config, os.path.join(scene.model_path, "adaptive_nodes"))
+        if hyper.graph_forward_adaptive:
+            manager_class = AdaptiveG3NodeManager
+            manager_kwargs = {}
+            if hyper.adaptive_g3_admission != "legacy":
+                from utils.candidate_expansion import CandidateExpansionManager
+                manager_class = CandidateExpansionManager
+                manager_kwargs["admission"] = hyper.adaptive_g3_admission
+            if hyper.adaptive_g3_signal != "legacy":
+                from utils.persistent_split import PersistentSplitManager
+                manager_class = PersistentSplitManager
+                manager_kwargs.update(signal=hyper.adaptive_g3_signal,
+                    quota_reference=hyper.adaptive_g3_quota_reference,
+                    depth_weight=opt.depth_weight)
+                if hyper.adaptive_g3_signal == "persistent_capacity":
+                    from utils.capacity_split import CapacitySplitManager
+                    manager_class = CapacitySplitManager
+                    manager_kwargs['capacity_reference'] = hyper.rcap_reference
+                elif hyper.adaptive_g3_signal == "persistent_underres":
+                    from utils.underres_split import UnderresolutionSplitManager
+                    manager_class = UnderresolutionSplitManager
+                    manager_kwargs['capacity_reference'] = hyper.rcap_reference
+            if hyper.surface_graph_refine:
+                from utils.surface_graph_refine import SurfaceGraphRefineManager
+                manager_class, manager_kwargs = SurfaceGraphRefineManager, {}
+            if hyper.surface_child_mode != 'none':
+                from utils.surface_children import SurfaceChildManager
+                manager_class, manager_kwargs = SurfaceChildManager, dict(mode=hyper.surface_child_mode)
+            adaptive_manager = manager_class(
+                gaussians, adaptive_config, os.path.join(scene.model_path, "adaptive_nodes"),
+                hyper.adaptive_g3_score, hyper.adaptive_g3_placement, **manager_kwargs)
+            if hyper.adaptive_g3_state:
+                adaptive_manager.load(hyper.adaptive_g3_state)
+        else:
+            adaptive_manager = AdaptiveNodeManager(
+                gaussians, adaptive_config, os.path.join(scene.model_path, "adaptive_nodes"))
         gaussians.adaptive_node_manager = adaptive_manager
+        if fine_resume_state is not None and fine_resume_state.get('pending_split'):
+            if hyper.surface_child_mode != 'none':
+                from utils.exact_split_branchpoint import digest, model_digest
+                if model_digest(gaussians) != fine_resume_state['model_sha256']:
+                    raise RuntimeError('Surface child source model reload is not exact')
+                if digest(gaussians.optimizer.state_dict()) != fine_resume_state['optimizer_sha256']:
+                    raise RuntimeError('Surface child source Adam reload is not exact')
+            else:
+                from utils.exact_split_branchpoint import restore_manager
+                restore_manager(adaptive_manager, fine_resume_state)
     video_cams = scene.getVideoCameras()
     
     if not viewpoint_stack:
         viewpoint_stack = scene.getTrainCameras()
+    temporal_cameras = sorted(
+        viewpoint_stack, key=lambda camera: float(torch.as_tensor(camera.time).reshape(-1)[0]))
+    temporal_index = {id(camera): index for index, camera in enumerate(temporal_cameras)}
+    if fine_resume_state is not None:
+        camera_names = [camera.image_name for camera in viewpoint_stack]
+        if camera_names != fine_resume_state["train_camera_order"]:
+            raise ValueError("Fine warm-up camera order differs from saved state")
+        torch.set_rng_state(fine_resume_state["torch_rng"])
+        torch.cuda.set_rng_state_all(fine_resume_state["cuda_rng"])
+        random.setstate(fine_resume_state["python_rng"])
+        np.random.set_state(fine_resume_state["numpy_rng"])
+        print("Resumed exact common fine state after iteration "
+              f"{int(fine_resume_state['iteration'])}", flush=True)
+        # Multi-seed matched continuations share the exact same model and
+        # optimizer state at the branch point, but intentionally use a new
+        # fine-stage sampling trajectory.  This reset must happen *after* the
+        # checkpoint RNG restore above; doing it before scene_reconstruction
+        # made every requested experiment seed silently follow seed 0.
+        if hyper.reset_fine_rng:
+            if fine_resume_state.get('pending_split'):
+                raise ValueError('Exact pre-split branchpoint forbids RNG reset')
+            setup_seed(int(hyper.experiment_seed))
+            print("Reset fine RNG after exact resume: "
+                  f"experiment_seed={int(hyper.experiment_seed)}", flush=True)
+
+    if stage == 'fine' and hyper.connectivity_ablation_audit:
+        if hyper.reset_fine_rng or (hyper.adaptive_node_mode != 'none' and not (
+                hyper.surface_graph_refine and len(gaussians.deformation_graph.node_xyz) == 2000)):
+            raise ValueError('Connectivity ablation forbids adaptive nodes and RNG reset')
+        from utils.connectivity_ablation import record_initial
+        record_initial(gaussians,fine_resume_state,viewpoint_stack,render,pipe,background,scene.model_path)
+
+    if fine_resume_state is not None and fine_resume_state.get('pending_split'):
+        from utils.exact_split_branchpoint import digest, model_digest
+        pending=int(fine_resume_state['iteration'])
+        camera=next(c for c in viewpoint_stack if c.image_name==fine_resume_state['pending_camera_name'])
+        rng_hash=digest(dict(torch_rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),
+                            python_rng=random.getstate(),numpy_rng=np.random.get_state()))
+        if rng_hash!=fine_resume_state['rng_sha256']:
+            raise RuntimeError('Pre-split RNG restore failed')
+        with torch.no_grad():
+            initial=render(camera,gaussians,pipe,background,stage='fine')
+            depth_row=adaptive_manager._depth_metrics(initial['depth'],camera.original_depth.cuda().float(),getattr(camera,'mask',None))
+            audit=dict(phase='before_first_split',iteration=pending,model_sha256=model_digest(gaussians),
+                       optimizer_sha256=digest(gaussians.optimizer.state_dict()),rng_sha256=rng_hash,
+                       next_camera_names=fine_resume_state['next_camera_names'],depth=depth_row,
+                       render=initial['render'].detach().cpu(),depth_tensor=initial['depth'].detach().cpu(),
+                       alpha=initial['alpha'].detach().cpu())
+            torch.save(audit,os.path.join(scene.model_path,'pre_split_reload_audit.pth'))
+            del initial
+            adaptive_manager.collect_event_signals(pending,scene.getTrainCameras(),render,pipe,background)
+            adaptive_manager.adapt(pending,camera,render,pipe,background,lpips_model)
+            scene.save(pending,'fine')
+        print('[EXACT_PRE_SPLIT_RESUME] pending 5k split applied, no duplicate Adam step',flush=True)
     
     for iteration in range(first_iter, final_iter+1):        
         if network_gui.conn == None:
@@ -166,6 +319,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 network_gui.conn = None
 
         iter_start.record()
+        if adaptive_manager is not None and hasattr(adaptive_manager, 'begin_iteration'):
+            adaptive_manager.begin_iteration(iteration)
         gaussians.update_learning_rate(iteration, stage=stage)
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 500 == 0:
@@ -177,6 +332,26 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         else:
             idx = randint(0, len(viewpoint_stack)-1)
             # idx = iteration % len(viewpoint_stack)
+
+        if stage == 'fine' and (hyper.connectivity_ablation_audit or hyper.surface_child_mode != 'none'):
+            with open(os.path.join(scene.model_path,'connectivity_camera_sequence.jsonl'),'a') as stream:
+                stream.write(json.dumps(dict(iteration=iteration,camera_name=viewpoint_stack[idx].image_name))+'\n')
+
+        if (stage == "fine" and (hyper.reset_fine_rng or (fine_resume_state is not None and fine_resume_state.get('pending_split'))) and
+                fine_resume_state is not None and
+                iteration <= int(fine_resume_state["iteration"]) + 5):
+            if fine_resume_state.get('pending_split'):
+                offset = iteration - int(fine_resume_state['iteration']) - 1
+                if viewpoint_stack[idx].image_name != fine_resume_state['next_camera_names'][offset]:
+                    raise RuntimeError('Exact branchpoint camera sampling trajectory changed after pending split')
+            seed_audit_path = os.path.join(scene.model_path, "fine_seed_audit.jsonl")
+            with open(seed_audit_path, "a") as stream:
+                stream.write(json.dumps({
+                    "iteration": int(iteration),
+                    "experiment_seed": int(hyper.experiment_seed),
+                    "camera_index": int(idx),
+                    "camera_name": viewpoint_stack[idx].image_name,
+                }) + "\n")
             
         viewpoint_cams = [viewpoint_stack[idx]]
         # Render
@@ -296,8 +471,13 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         loss_arap_raw = transformed_means.new_zeros(())
         loss_arap = transformed_means.new_zeros(())
         loss_canonical_laplacian = transformed_means.new_zeros(())
+        loss_isometry_raw = transformed_means.new_zeros(())
+        loss_isometry = transformed_means.new_zeros(())
+        loss_node_edge_raw = transformed_means.new_zeros(())
+        loss_node_edge = transformed_means.new_zeros(())
         arap_diagnostics = None
-        use_fine_knn = hyper.geometry_regularizer in ("knn99", "knn99_arap_monitor")
+        use_fine_knn = hyper.geometry_regularizer in (
+            "knn99", "knn99_arap_monitor", "knn99_arap", "knn99_node_edge")
         if stage == "coarse" or use_fine_knn:
             idx = gaussians.closest_point_indices
             cluster_pts = transformed_means[idx]
@@ -307,7 +487,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             per_point_sq_dist = ((center_points - cluster_means) ** 2).sum(dim=1)
             loss_clusters = opt.knn_weight * per_point_sq_dist.mean()
             loss += loss_clusters
-        elif stage == "fine" and hyper.geometry_regularizer == "arap":
+        elif stage == "fine" and hyper.geometry_regularizer in ("arap", "arap_iso", "iso"):
             loss_canonical_laplacian = (
                 float(hyper.canonical_laplacian_weight) *
                 canonical_xyz_laplacian(
@@ -315,7 +495,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             loss += loss_canonical_laplacian
 
         needs_arap = (stage == "fine" and (
-            hyper.geometry_regularizer == "arap" or
+            hyper.geometry_regularizer in ("arap", "knn99_arap", "arap_iso") or
             (hyper.geometry_regularizer == "knn99_arap_monitor" and
              iteration in arap_audit_iterations)))
         if needs_arap:
@@ -329,9 +509,51 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             nodes_t2 = gaussians.node_positions_at_time(t2)
             loss_arap_raw, arap_diagnostics = gaussians.node_arap_graph(
                 nodes_t1, nodes_t2, return_diagnostics=True)
-            if hyper.geometry_regularizer == "arap":
+            if hyper.geometry_regularizer in ("arap", "knn99_arap", "arap_iso"):
                 loss_arap = float(hyper.arap_weight) * loss_arap_raw
                 loss += loss_arap
+
+        if stage == "fine" and hyper.geometry_regularizer in ("arap_iso", "iso"):
+            graph = gaussians.gaussian_isometry_graph
+            if graph is None:
+                raise RuntimeError("Local Gaussian isometry requested without graph")
+            t1_index = idx
+            window = int(hyper.local_isometry_temporal_window)
+            candidates = [index for index in range(
+                max(0, t1_index - window), min(len(viewpoint_stack), t1_index + window + 1))
+                if index != t1_index]
+            if not candidates:
+                raise RuntimeError("No valid nearby timestamp for local isometry")
+            selected = int(torch.randint(
+                len(candidates), (1,), generator=isometry_generator).item())
+            t2_iso = viewpoint_stack[candidates[selected]].time
+            xyz_t2, _, _ = gaussians.deform_geometry_from_nodes(t2_iso)
+            loss_isometry_raw = graph(transformed_means, xyz_t2)
+            loss_isometry = float(hyper.local_isometry_weight) * loss_isometry_raw
+            loss += loss_isometry
+
+        needs_node_edge = (stage == "fine" and
+                           hyper.geometry_regularizer == "knn99_node_edge")
+        if needs_node_edge:
+            graph = gaussians.node_edge_graph
+            if graph is None:
+                raise RuntimeError("Node-edge loss requested without a fixed graph")
+            t1_temporal_index = temporal_index[id(viewpoint_cams[0])]
+            window = 4
+            candidates = [index for index in range(
+                max(0, t1_temporal_index-window),
+                min(len(temporal_cameras), t1_temporal_index+window+1))
+                if index != t1_temporal_index]
+            selected = int(torch.randint(
+                len(candidates), (1,), generator=node_edge_generator).item())
+            t1_edge = viewpoint_cams[0].time
+            t2_edge = temporal_cameras[candidates[selected]].time
+            nodes_t1_edge = gaussians.node_positions_at_time(t1_edge)
+            nodes_t2_edge = gaussians.node_positions_at_time(t2_edge)
+            loss_node_edge_raw = graph(nodes_t1_edge, nodes_t2_edge)
+            if iteration > int(hyper.node_edge_start_iteration):
+                loss_node_edge = float(hyper.node_edge_weight) * loss_node_edge_raw
+                loss += loss_node_edge
 
         ### MINIMIZE DCOLOR UPDATE - DCOL LOSS
         residual_weight = (opt.lambda_res if gaussians.color_model == "node_residual_mlp"
@@ -352,6 +574,35 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
         reconstruction_loss = (Ll1 + depth_loss + loss_dcol +
                                loss_color_smooth + tv_loss)
+        if needs_node_edge and iteration in node_edge_audit_iterations:
+            deformation_parameters = tuple(gaussians.node_mlp.parameters())
+            reconstruction_gradient_norm = _autograd_norm(
+                reconstruction_loss, deformation_parameters)
+            knn99_gradient_norm = _autograd_norm(
+                loss_clusters, deformation_parameters)
+            edge_raw_gradient_norm = _autograd_norm(
+                loss_node_edge_raw, deformation_parameters)
+            reconstruction_denominator = max(reconstruction_gradient_norm, 1e-20)
+            row = {
+                "iteration": int(iteration),
+                "topology": gaussians.node_edge_graph.topology,
+                "t1": float(torch.as_tensor(t1_edge).reshape(-1)[0]),
+                "t2": float(torch.as_tensor(t2_edge).reshape(-1)[0]),
+                "frame_distance": abs(
+                    candidates[selected] - t1_temporal_index),
+                "reconstruction_gradient_norm": reconstruction_gradient_norm,
+                "knn99_weighted_gradient_norm": knn99_gradient_norm,
+                "knn99_weighted_gradient_ratio": (
+                    knn99_gradient_norm / reconstruction_denominator),
+                "node_edge_raw_loss": float(loss_node_edge_raw.detach()),
+                "node_edge_weight": float(hyper.node_edge_weight),
+                "node_edge_raw_gradient_norm": edge_raw_gradient_norm,
+                "node_edge_weighted_gradient_ratio": (
+                    float(hyper.node_edge_weight) * edge_raw_gradient_norm /
+                    reconstruction_denominator),
+            }
+            _append_node_edge_diagnostic(scene.model_path, row)
+            print("[NODE_EDGE_GRADIENT_AUDIT] " + json.dumps(row), flush=True)
         if needs_arap and iteration in arap_audit_iterations:
             deformation_parameters = tuple(gaussians.node_mlp.parameters())
             reconstruction_gradient_norm = _autograd_norm(
@@ -396,11 +647,25 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             if gaussians.deformation_mode == "node":
                 raise FloatingPointError(f"Non-finite {stage} loss at iteration {iteration}")
 
+        if stage == "fine" and (hyper.graph_forward_mode == "g4" or hyper.graph_forward_adaptive):
+            if (not torch.isfinite(rendered_images).all() or
+                    not torch.isfinite(rendered_depths).all() or
+                    not torch.isfinite(transformed_means).all()):
+                raise FloatingPointError(f"Non-finite G4 forward at iteration {iteration}")
+            if not visibility_filter.any():
+                raise RuntimeError(f"G4 visibility collapse at iteration {iteration}")
+            if (rendered_images.detach().abs().mean() < 1e-3 and
+                    (rendered_images.detach().abs() < (1 / 255)).float().mean() > .999):
+                raise RuntimeError(f"G4 black render at iteration {iteration}")
+
         adaptive_render_gradient = None
-        if adaptive_manager is not None and iteration <= adaptive_manager.config.end:
-            gradients = torch.autograd.grad(
-                Ll1, transformed_means_list, retain_graph=True, allow_unused=False)
-            adaptive_render_gradient = torch.stack(gradients, dim=0).mean(dim=0).detach()
+        if (adaptive_manager is not None and iteration <= adaptive_manager.config.end and
+                getattr(adaptive_manager, 'collect_online_gradient', True)):
+            signal_loss = (depth_loss if getattr(adaptive_manager, 'geometry_signal', '') == 'depth' else Ll1)
+            if signal_loss.requires_grad:
+                gradients = torch.autograd.grad(
+                    signal_loss, transformed_means_list, retain_graph=True, allow_unused=False)
+                adaptive_render_gradient = torch.stack(gradients, dim=0).mean(dim=0).detach()
             
         loss.backward()
         if adaptive_manager is not None and adaptive_render_gradient is not None:
@@ -429,6 +694,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 "arap_raw_loss": loss_arap_raw.item(),
                 "arap_weighted_loss": loss_arap.item(),
                 "canonical_laplacian_loss": loss_canonical_laplacian.item(),
+                "local_isometry_raw_loss": loss_isometry_raw.item(),
+                "local_isometry_weighted_loss": loss_isometry.item(),
+                "node_edge_raw_loss": loss_node_edge_raw.item(),
+                "node_edge_weighted_loss": loss_node_edge.item(),
                 "residual_loss": loss_dcol.item(),
                 "mean_abs_delta": dcol.detach().abs().mean().item(),
                 "max_abs_delta": dcol.detach().abs().max().item(),
@@ -476,6 +745,60 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 r6_diagnostic["iteration_ms"] = metrics["elapsed"]
                 _append_r6_diagnostic(scene.model_path, r6_diagnostic)
                 print("[R6_DIAGNOSTIC] " + json.dumps(r6_diagnostic), flush=True)
+            if (stage == "fine" and hyper.graph_forward_mode != "none" and
+                    iteration in graph_forward_monitor_iterations):
+                reference = gaussians.graph_forward_reference_data
+                if reference is None:
+                    raise RuntimeError("Graph-forward monitoring requires its saved reference")
+                graph_diagnostic = gaussians.graph_forward_diagnostics(
+                    reference["trajectory_times"])
+                mean_rgb = float(rendered_images.detach().abs().mean())
+                black_fraction = float(
+                    (rendered_images.detach().abs() < (1/255)).float().mean())
+                visible_fraction = float(visibility_filter.float().mean())
+                reference_motion = float(
+                    (matched_motion_reference if matched_motion_reference is not None else
+                     reference["motion_reference_p95"])[str(iteration)])
+                graph_diagnostic.update({
+                    "iteration": int(iteration),
+                    "mode": hyper.graph_forward_mode,
+                    "visible_gaussian_fraction": visible_fraction,
+                    "mean_abs_render_rgb": mean_rgb,
+                    "black_pixel_fraction": black_fraction,
+                    "reference_motion_p95": reference_motion,
+                    "motion_p95_ratio": (
+                        graph_diagnostic["motion"]["p95"] / max(reference_motion, 1e-12)),
+                })
+                _append_graph_forward_diagnostic(scene.model_path, graph_diagnostic)
+                print("[GRAPH_FORWARD_DIAGNOSTIC] " +
+                      json.dumps(graph_diagnostic), flush=True)
+                failures = []
+                if not np.isfinite(graph_diagnostic["motion"]["p95"]):
+                    failures.append("nonfinite_motion")
+                if visible_fraction < 1e-5:
+                    failures.append("visible_gaussian_collapse")
+                if mean_rgb < 1e-3 and black_fraction > .999:
+                    failures.append("almost_fully_black")
+                if graph_diagnostic["motion_p95_ratio"] > 2:
+                    failures.append("motion_p95_above_2x_reference")
+                if failures:
+                    raise RuntimeError(
+                        "Graph-forward stability monitor aborted: " + ",".join(failures))
+            if (stage == "fine" and (hyper.graph_forward_mode == "g4" or hyper.graph_forward_adaptive) and
+                    (iteration == first_iter or iteration % 250 == 0)):
+                # Safety only: intermediate G0 envelopes interpolate the saved
+                # matched checkpoints; requested 5k/10k/20k/30k gates above are exact.
+                keys = sorted(int(key) for key in matched_motion_reference)
+                limits = [matched_motion_reference[str(key)] for key in keys]
+                baseline_p95 = float(np.interp(iteration, keys, limits))
+                with torch.no_grad():
+                    rows = [gaussians._query_node_motion(t)[0] for t in
+                            gaussians.graph_forward_reference_data["trajectory_times"]]
+                    magnitudes = torch.stack(rows).norm(dim=-1).flatten()
+                    actual_p95 = float(torch.quantile(magnitudes, .95))
+                if not np.isfinite(actual_p95) or actual_p95 > 2 * baseline_p95:
+                    raise RuntimeError(
+                        f"G4 motion safety abort at {iteration}: {actual_p95} > 2x {baseline_p95}")
             
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, 
                             (pipe, background, 1.,))
@@ -522,11 +845,24 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     gaussians.reset_opacity()
                     
             # Optimizer step
-            if iteration < train_iter:
+            if iteration < train_iter or hyper.surface_child_mode != 'none':
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
             if adaptive_manager is not None and adaptive_manager.is_event(iteration):
+                if hyper.pre_split_branchpoint_stop:
+                    from utils.exact_split_branchpoint import save_branchpoint
+                    source_render=render(viewpoint_cams[0],gaussians,pipe,background,stage='fine')
+                    save_branchpoint(hyper.pre_split_branchpoint_stop,scene,gaussians,
+                        adaptive_manager,viewpoint_stack,viewpoint_cams[0],iteration,source_render)
+                    del source_render
+                    gaussians.pre_split_branchpoint_saved_at=iteration
+                    progress_bar.close()
+                    print('[EXACT_PRE_SPLIT_SAVED] stopped BEFORE split, full 30k LR/Adam schedule retained',flush=True)
+                    return
+                if hasattr(adaptive_manager, 'collect_event_signals'):
+                    adaptive_manager.collect_event_signals(
+                        iteration, scene.getTrainCameras(), render, pipe, background)
                 adaptive_manager.adapt(
                     iteration, viewpoint_cams[0], render, pipe, background, lpips_model)
                 if iteration in saving_iterations:
@@ -543,9 +879,37 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     if adaptive_manager is not None:
         adaptive_manager.save(
             os.path.join(adaptive_manager.output_dir, "adaptive_state_final.pth"), train_iter)
+    if stage == "fine" and hyper.fine_stage_state_save:
+        state_path = hyper.fine_stage_state_save
+        directory = os.path.dirname(state_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        exact_extra = {}
+        if hyper.surface_child_mode != 'none':
+            from utils.exact_split_branchpoint import RAW_NAMES
+            exact_extra = dict(exact_raw={k:getattr(gaussians,k).detach().clone() for k in RAW_NAMES},
+                               active_sh_degree=gaussians.active_sh_degree, spatial_lr_scale=gaussians.spatial_lr_scale)
+        torch.save({
+            **exact_extra,
+            "format_version": 1,
+            "iteration": int(train_iter),
+            "optimizer": gaussians.optimizer.state_dict(),
+            "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all(),
+            "python_rng": random.getstate(),
+            "numpy_rng": np.random.get_state(),
+            "train_camera_order": [camera.image_name for camera in viewpoint_stack],
+        }, state_path)
+        print(f"Saved exact fine-stage optimizer/RNG state: {state_path}", flush=True)
 
 
 def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, extra_mark):
+    if hyper.surface_child_mode not in ('none', 'control', 'adaptive', 'shadow'):
+        raise ValueError('Unknown surface_child_mode')
+    if hyper.surface_child_mode != 'none':
+        if (not hyper.graph_forward_adaptive or hyper.surface_graph_refine or
+                hyper.adaptive_node_max != 2535 or hyper.node_position_mode != 'direct'):
+            raise ValueError('Surface children require G3 adaptive plumbing, direct mode, max2535; no edge splitting')
     importance_sampling = hyper.node_sampling in ("weighted_fps", "fps_plus_importance")
     if hyper.node_sampling not in ("fps", "weighted_fps", "fps_plus_importance"):
         raise ValueError("node_sampling must be fps, weighted_fps, or fps_plus_importance")
@@ -557,8 +921,10 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         raise ValueError("fps_plus_importance requires node_importance_extra_nodes > 0")
     if hyper.node_sampling_gradient_source not in ("total", "depth"):
         raise ValueError("node_sampling_gradient_source must be total or depth")
-    if hyper.geometry_regularizer not in ("knn99", "knn99_arap_monitor", "arap"):
-        raise ValueError("geometry_regularizer must be knn99, knn99_arap_monitor, or arap")
+    if hyper.geometry_regularizer not in (
+            "knn99", "knn99_arap_monitor", "arap", "knn99_arap", "arap_iso", "iso",
+            "knn99_node_edge"):
+        raise ValueError("Unsupported geometry_regularizer")
     if hyper.geometry_regularizer != "knn99":
         if hyper.deformation_mode != "node":
             raise ValueError("Node ARAP requires deformation_mode=node")
@@ -569,8 +935,72 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
         if (hyper.canonical_laplacian_weight < 0 or
                 not np.isfinite(hyper.canonical_laplacian_weight)):
             raise ValueError("canonical_laplacian_weight must be finite and nonnegative")
-    if hyper.geometry_regularizer == "arap" and hyper.adaptive_node_mode != "none":
+    if hyper.geometry_regularizer in ("arap", "knn99_arap", "arap_iso", "iso") and hyper.adaptive_node_mode != "none":
         raise ValueError("Run and gate fixed-node A0 before implementing adaptive A1 ARAP")
+    if hyper.geometry_regularizer in ("arap_iso", "iso"):
+        if hyper.local_isometry_k != 12 or hyper.local_isometry_min_degree != 4:
+            raise ValueError("E2 requires Gaussian KNN-12 candidates and minimum degree 4")
+        if hyper.local_isometry_temporal_window != 4:
+            raise ValueError("E2 requires the fixed +/-4-frame temporal window")
+        if hyper.local_isometry_weight < 0 or not np.isfinite(hyper.local_isometry_weight):
+            raise ValueError("local_isometry_weight must be finite and nonnegative")
+    if hyper.geometry_regularizer == "knn99_node_edge":
+        if not hyper.node_edge_graph_reference:
+            raise ValueError("knn99_node_edge requires a fixed graph reference")
+        if hyper.node_edge_weight <= 0 or not np.isfinite(hyper.node_edge_weight):
+            raise ValueError("node_edge_weight must be finite and positive")
+        if hyper.node_edge_start_iteration != 2000:
+            raise ValueError("Connectivity study requires the common 2k warm-up")
+        if hyper.arap_weight != 0 or hyper.local_isometry_weight != 0:
+            raise ValueError("Connectivity study disables ARAP and Gaussian isometry")
+        if hyper.canonical_laplacian_weight != 0:
+            raise ValueError("Connectivity study disables standalone canonical Laplacian")
+        if not hyper.fine_warmup_reference or not hyper.fine_warmup_state:
+            raise ValueError("Connectivity study requires the exact common 2k state")
+    elif hyper.node_edge_graph_reference:
+        raise ValueError("node_edge_graph_reference is only valid for knn99_node_edge")
+    if hyper.graph_forward_mode not in ("none", "g1", "g2", "g3", "g4"):
+        raise ValueError("graph_forward_mode must be none, g1, g2, g3 or g4")
+    if hyper.graph_forward_mode != "none":
+        if hyper.geometry_regularizer != "knn99":
+            raise ValueError("Graph-forward study retains only KNN-99")
+        if not hyper.graph_forward_reference:
+            raise ValueError("Graph-forward study requires the fixed E4-derived reference")
+        if not hyper.fine_warmup_reference or not hyper.fine_warmup_state:
+            raise ValueError("Graph-forward study requires the exact common 2k state")
+        if hyper.arap_weight != 0 or hyper.node_edge_weight != 0 or hyper.local_isometry_weight != 0:
+            raise ValueError("Graph-forward study disables ARAP/edge/isometry losses")
+        if hyper.canonical_laplacian_weight != 0:
+            raise ValueError("Graph-forward study disables standalone canonical Laplacian")
+        if hyper.adaptive_node_mode != "none" and not hyper.graph_forward_adaptive:
+            raise ValueError("Graph-forward study disables adaptive nodes")
+        if hyper.graph_forward_adaptive:
+            if hyper.surface_graph_refine and hyper.adaptive_node_max != 2535:
+                raise ValueError('G4-SurfRefine requires the fixed maximum2535 budget')
+            if hyper.graph_forward_mode != "g3" or hyper.adaptive_node_mode != "split":
+                raise ValueError("Adaptive graph-forward study requires G3 split-only")
+            if not hyper.graph_forward_motion_reference:
+                raise ValueError("Adaptive G3 requires matched fixed-G3 motion envelope")
+            if (hyper.adaptive_node_start, hyper.adaptive_node_end,
+                    hyper.adaptive_node_interval) != (5000, 20000, 2500):
+                raise ValueError("Adaptive G3 keeps events 5k..20k every 2500")
+            if hyper.color_residual_scale != .5:
+                raise ValueError("Adaptive G3 retains R6 eta=.5")
+            if hyper.pre_split_branchpoint_stop and (hyper.adaptive_g3_signal != 'rgb_matched' or hyper.adaptive_g3_admission != 'D3' or opt.iterations != 30000):
+                raise ValueError('Common pre-split source must use R0/D3 and the original 30k schedule')
+            if hyper.adaptive_g3_signal in ('persistent_capacity', 'persistent_underres') and not hyper.rcap_reference:
+                raise ValueError('Rcap requires the frozen train-only capacity calibration')
+        if hyper.node_appearance_graph_mode != "fixed_initial":
+            raise ValueError("Graph-forward study requires the fixed 2k appearance graph")
+        if hyper.graph_forward_hidden_dim != 64:
+            raise ValueError("G2/G3 use the preregistered 64-wide residual decoder")
+        if hyper.graph_forward_mode == "g4":
+            if hyper.graph_forward_cancellation_alpha != 0.10:
+                raise ValueError("G4 uses preregistered cancellation alpha=0.10")
+            if not hyper.graph_forward_motion_reference:
+                raise ValueError("G4 requires its seed-matched G0 motion reference")
+    elif hyper.graph_forward_reference:
+        raise ValueError("graph_forward_reference requires G1, G2 or G3")
     if hyper.color_model == "node_residual_mlp":
         if hyper.deformation_mode != "node":
             raise ValueError("node_residual_mlp requires deformation_mode=node")
@@ -723,17 +1153,65 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
                 del sampling_state, observed, canonical, selected, nodes, indices, weights
             if hyper.color_model == "node_residual_mlp":
                 gaussians.initialize_appearance_model()
-            if hyper.geometry_regularizer != "knn99":
+            if hyper.fine_warmup_reference:
+                reference = hyper.fine_warmup_reference
+                reference_name = os.path.basename(os.path.normpath(reference))
+                if not reference_name.startswith("iteration_"):
+                    raise ValueError("Fine resume reference must be an iteration snapshot")
+                reference_iteration = int(reference_name.split("_", 1)[1])
+                requested_config = dict(vars(hyper))
+                gaussians.load_ply(os.path.join(reference, "point_cloud.ply"))
+                gaussians.load_model(reference)
+                for key, value in requested_config.items():
+                    setattr(hyper, key, value)
+                if len(gaussians.deformation_graph.node_xyz) != 2000 and not (
+                        hyper.graph_forward_adaptive and hyper.adaptive_g3_state):
+                    raise ValueError("Common warm-up must contain exactly 2000 nodes")
+                if (gaussians.appearance_graph is None or
+                        len(gaussians.appearance_graph.node_xyz) != 2000):
+                    raise ValueError("Common warm-up appearance graph must remain fixed at 2000")
+                expected_knn = torch.load(
+                    hyper.gaussian_knn_reference, map_location=gaussians._xyz.device,
+                    weights_only=True)
+                loaded_knn = getattr(gaussians, "closest_point_indices", None)
+                if loaded_knn is not None and not torch.equal(loaded_knn, expected_knn):
+                    raise ValueError("Common warm-up Gaussian KNN-99 differs from matched reference")
+                gaussians.closest_point_indices = expected_knn
+                gaussians.fine_resume_state = torch.load(
+                    hyper.fine_warmup_state, map_location="cpu",
+                    weights_only=False)
+                if hyper.adaptive_g3_signal in ('persistent_capacity', 'persistent_underres') and not gaussians.fine_resume_state.get('pending_split'):
+                    raise ValueError('Rcap must branch from the exact pre-first-split state')
+                if gaussians.fine_resume_state.get('pending_split'):
+                    from utils.exact_split_branchpoint import restore_raw
+                    restore_raw(gaussians,gaussians.fine_resume_state)
+                elif hyper.surface_child_mode != 'none':
+                    state = gaussians.fine_resume_state
+                    with torch.no_grad():
+                        for key, value in state['exact_raw'].items():
+                            getattr(gaussians,key).copy_(value.to(getattr(gaussians,key)))
+                    gaussians.active_sh_degree = state['active_sh_degree']
+                    gaussians.spatial_lr_scale = state['spatial_lr_scale']
+                if int(gaussians.fine_resume_state["iteration"]) != reference_iteration:
+                    raise ValueError("Fine optimizer/RNG state does not match snapshot iteration")
+                print(f"Loaded exact fine model/optimizer/RNG state at {reference_iteration} from {reference}",
+                      flush=True)
+            if hyper.geometry_regularizer == "knn99_node_edge":
+                gaussians.load_node_edge_graph(hyper.node_edge_graph_reference)
+            if hyper.graph_forward_mode != "none":
+                gaussians.initialize_graph_forward(hyper.graph_forward_reference)
+            if hyper.geometry_regularizer in (
+                    "knn99_arap_monitor", "arap", "knn99_arap", "arap_iso"):
                 gaussians.initialize_arap_graph(hyper.arap_k)
+            if hyper.geometry_regularizer in ("arap_iso", "iso"):
+                gaussians.initialize_gaussian_isometry_graph(
+                    k=hyper.local_isometry_k,
+                    minimum_degree=hyper.local_isometry_min_degree)
         
         opt.pruning_interval=opt.pruning_interval_fine
         opt.pruning_from_iter=opt.pruning_from_iter
         opt.densification_interval=opt.densification_interval_fine
         opt.densify_from_iter=opt.densify_from_iter_fine
-        # Paired seeds vary only fine-stage data order and ARAP temporal pairs;
-        # all branches reload the same post-coarse Gaussian/node/MLP state.
-        if hyper.reset_fine_rng:
-            setup_seed(int(hyper.experiment_seed))
         fine_start = walltime.monotonic()
         scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                             checkpoint_iterations, checkpoint, debug_from,
@@ -742,7 +1220,7 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     summary = {
         "color_model": hyper.color_model,
         "coarse_iterations": opt.coarse_iterations,
-        "fine_iterations": 0 if args.no_fine else opt.iterations,
+        "fine_iterations": 0 if args.no_fine else getattr(gaussians,'pre_split_branchpoint_saved_at',opt.iterations),
         "coarse_duration_s": coarse_duration,
         "fine_duration_s": fine_duration,
         "total_training_duration_s": walltime.monotonic() - training_start,
