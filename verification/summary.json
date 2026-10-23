@@ -1,0 +1,29 @@
+{
+  "pass_": true,
+  "baseline": "U7 Stage11",
+  "scenes": [
+    "transverse",
+    "rectum"
+  ],
+  "checkpoints": [
+    10000,
+    30000
+  ],
+  "checks": [
+    "both original model+Adam digest matches",
+    "both fixed masks/floors restored",
+    "both TRAIN3Adam updates and exact cold reload",
+    "both first2TEST RGB/depth/CH/HD95 equivalence to original",
+    "relocation to another root",
+    "camera-independent centers",
+    "video650x650",
+    "native equations SHA exact"
+  ],
+  "full_training_repeated": false,
+  "full_TEST200_metrics": "reference_results; packaging probe only2frames",
+  "excluded": [
+    "datasets",
+    "Conda env binaries",
+    "unrelated P/sigmoid2 model"
+  ]
+}

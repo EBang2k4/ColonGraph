@@ -1,0 +1,19 @@
+{
+  "pass_": true,
+  "TRAIN_views": 200,
+  "TEST_used": false,
+  "model_unchanged": true,
+  "quota_each": 30000,
+  "union_count": 60000,
+  "union_fraction": 0.30000001192092896,
+  "selection": "bottom15percent TRAIN radius>0 visibility OR outer15percent canonical centroid Euclidean radius; stable ID tie break",
+  "fine0_sha": "33db1cdf7183c9a1c27011adddb99f3e6e65e776636ad217d7824afcad5dde67",
+  "source10k_sha": "e5be97dd43c7a4b4324b0c4e61d0aeba8c0f3fe6795e9861076a48fe4b99505d",
+  "gate": {
+    "ratio": 0.914371074869932,
+    "enabled": true,
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage10_unified/run_20261023/gates/R/scale_gate.json",
+    "source_sha": "1bd66a475ea27fcb1416c11532cb7e272cf3d136828e7008732cff5c44aba15c"
+  },
+  "caveat": "projected radius visibility is a support proxy, no depth-occlusion check; peripheral mask is not certified anatomical boundary"
+}

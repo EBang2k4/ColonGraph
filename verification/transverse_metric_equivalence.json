@@ -1,0 +1,16 @@
+{
+  "pass_": true,
+  "frames": 2,
+  "max_absolute_errors": {
+    "PSNR": 0.0,
+    "SSIM": 0.0,
+    "LPIPS_A": 0.0,
+    "Depth_MSE_raw": 0.0,
+    "Depth_MSE_normalized": 0.0,
+    "CH": 5.568601135763629e-13,
+    "HD95": 0.0,
+    "HD95_pred_to_GT": 0.0,
+    "HD95_GT_to_pred": 0.0
+  },
+  "reference": "Original Stage11 fixed30k per-view metrics; two-frame packaging probe, not a new full evaluation"
+}

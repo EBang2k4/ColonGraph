@@ -1,0 +1,62 @@
+[
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/U7/fine_state_10000.pth",
+    "package": "assets/transverse/prefix_10000/fine_state_10000.pth",
+    "original_sha256": "29421a0574834de462b6a7ebb15fba8cf9adc3255de36244fdfdb89ff48791ba"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/U7/checkpoint_10000.json",
+    "package": "assets/transverse/prefix_10000/checkpoint_10000.json",
+    "original_sha256": "da04e771899372e719baaac036c4977f323f568732a4da8f5100eb7cc164301b"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/U7/cfg_args",
+    "package": "assets/transverse/prefix_10000/cfg_args",
+    "original_sha256": "6dfaef03b153f0e7b7acce51054c2c8c209d12ef87635554163ed687dd4cdc9b"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/U7/fine_state_30000.pth",
+    "package": "assets/transverse/u7_30000/fine_state_30000.pth",
+    "original_sha256": "2517e2a8a7659d039e7886aa5813cec6b6c2561bb36253efa87349072f057767"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/U7/checkpoint_30000.json",
+    "package": "assets/transverse/u7_30000/checkpoint_30000.json",
+    "original_sha256": "69aa1d28bde2daee87a5d66ca0285efce71b272d64a636e4b939ef184c23f131"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/U7/cfg_args",
+    "package": "assets/transverse/u7_30000/cfg_args",
+    "original_sha256": "be0b023274fbefb329806edd0ee02696d90d8a648fafb08997c73fb8d2f1f08b"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/R/fine_state_10000.pth",
+    "package": "assets/rectum/prefix_10000/fine_state_10000.pth",
+    "original_sha256": "e5be97dd43c7a4b4324b0c4e61d0aeba8c0f3fe6795e9861076a48fe4b99505d"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/R/checkpoint_10000.json",
+    "package": "assets/rectum/prefix_10000/checkpoint_10000.json",
+    "original_sha256": "f5b6b298a4cb062fc9f2061a62a0d800141a714e3c7ba89aa07cee008cc3c485"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/reference_snapshots/R/cfg_args",
+    "package": "assets/rectum/prefix_10000/cfg_args",
+    "original_sha256": "1b53e000057c92867121d8045184a99cab00f0e5b1e47471f417c303f85e2904"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/R/fine_state_30000.pth",
+    "package": "assets/rectum/u7_30000/fine_state_30000.pth",
+    "original_sha256": "48c568cf8c3dc51a2ddda4705edc7e542938c7b785ac70f21157a10ff82b29d6"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/R/checkpoint_30000.json",
+    "package": "assets/rectum/u7_30000/checkpoint_30000.json",
+    "original_sha256": "d6348ce41dc1529bb4a909c176b8d61e1a9ac657b28494c04ece7cf169e4c0fa"
+  },
+  {
+    "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage11_unified/run_20261024/runs/R/cfg_args",
+    "package": "assets/rectum/u7_30000/cfg_args",
+    "original_sha256": "ae1d9996829fca17e8ece4c20b7cbbdc67a489017286a13b364961ae8eede284"
+  }
+]

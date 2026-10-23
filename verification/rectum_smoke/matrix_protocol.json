@@ -1,0 +1,7 @@
+{
+  "baseline": "Stage11 U7",
+  "scene": "rectum",
+  "source": "packed exact10k prefix",
+  "fine_end": 30000,
+  "GT_PLY_training": false
+}

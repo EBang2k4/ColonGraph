@@ -1,0 +1,8 @@
+{
+  "selection_sha": "8c1cec90fb16d96c8327612c7b73757c11f7d7c973820b9b37c411876835a6eb",
+  "restored_fraction": 0.503600001335144,
+  "boundary_fraction": 0.29999998211860657,
+  "Adam_policy": "preserve existing opacity moments; project logits after each Adam",
+  "metric_enabled": true,
+  "lambda_raw": 0.3
+}

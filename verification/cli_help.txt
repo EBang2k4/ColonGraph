@@ -1,0 +1,27 @@
+usage: u7.py [-h] --scene {transverse,rectum} [--data DATA] [--out OUT]
+             [--run RUN] [--iteration ITERATION] [--end END] [--steps STEPS]
+             [--geometry] [--max-frames MAX_FRAMES] [--fps FPS]
+             [--oracle ORACLE]
+             {validate,smoke,train,evaluate,render}
+
+Packaged Stage11 U7 baseline; two DynamicColon scenes.
+
+positional arguments:
+  {validate,smoke,train,evaluate,render}
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --scene {transverse,rectum}
+  --data DATA           Dataset root with rootTRAIN200 and providedtest200
+  --out OUT             New output directory; existing output is never
+                        overwritten
+  --run RUN             Optional trained U7 model directory, instead of
+                        packed30k
+  --iteration ITERATION
+  --end END
+  --steps STEPS         TRAIN-only smoke updates from packed10k
+  --geometry            Also evaluateCH/HD95 against post-training GTPLY
+  --max-frames MAX_FRAMES
+  --fps FPS
+  --oracle ORACLE       Optional original deterministic TRAIN render probe for
+                        packaging audit

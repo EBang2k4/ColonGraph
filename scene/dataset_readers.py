@@ -49,6 +49,7 @@ class SceneInfo(NamedTuple):
     ply_path: str
     maxtime: int
     gt_plys: list = None
+    initialization_audit: dict = None
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -317,7 +318,7 @@ def readC3VDInfo(datadir, mode='monocular'):
     return scene_info
 
 
-def readColonSplatInfo(datadir, load_plys=False):
+def readColonSplatInfo(datadir, load_plys=False, point_initialization="provided_ply", init_pts=200000):
     # load camera infos
     from scene.endo_loader import ColonSplat_Dataset
     endo_dataset = ColonSplat_Dataset(
@@ -331,10 +332,30 @@ def readColonSplatInfo(datadir, load_plys=False):
     # get normalizations
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    ply_path = os.path.join(datadir, "ply", "pc_0001.ply")
-    
-    
-    pcd = fetchPly(ply_path)
+    if point_initialization not in ("provided_ply", "depth"):
+        raise ValueError("dynamic_point_initialization must be provided_ply or depth")
+    initialization_audit = None
+    if point_initialization == "depth":
+        from utils.rgbd_initialization import rgbd_to_world
+        camera = train_cam_infos[0]
+        w2c = np.eye(4)
+        w2c[:3, :3] = np.asarray(camera.R).T
+        w2c[:3, 3] = np.asarray(camera.T)
+        xyz, rgb, initialization_audit = rgbd_to_world(
+            camera.original_image.permute(1, 2, 0).cpu().numpy(),
+            camera.original_depth.cpu().numpy(), np.linalg.inv(w2c),
+            camera.FoVx, camera.FoVy, init_pts)
+        initialization_audit.update(frame=camera.image_name,
+                                    source=os.path.abspath(datadir))
+        pcd = BasicPointCloud(points=xyz, colors=rgb, normals=np.zeros_like(xyz))
+        ply_path = None
+        # No GT PLY reads, even though the historical Scene path requests them.
+        load_plys = False
+        print("DynamicColon initialization: RGB+GT depth backprojection; GT PLY NOT read; "
+              f"N={len(xyz)} frame={camera.image_name}")
+    else:
+        ply_path = os.path.join(datadir, "ply", "pc_0001.ply")
+        pcd = fetchPly(ply_path)
 
     
     # get the maximum time
@@ -361,7 +382,8 @@ def readColonSplatInfo(datadir, load_plys=False):
                             video_cameras=None,
                             nerf_normalization=nerf_normalization,
                             ply_path=ply_path,
-                            maxtime=maxtime
+                            maxtime=maxtime,
+                            initialization_audit=initialization_audit
                             )
 
     return scene_info

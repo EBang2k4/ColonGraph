@@ -55,6 +55,21 @@ def l1_loss(network_output, gt, mask=None, depth=False):
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 
+
+def canonical_xyz_laplacian(xyz, neighbor_indices):
+    """KNN-99 canonical-position component, independent of deformation.
+
+    This preserves the per-Gaussian canonical XYZ DOF that node-level ARAP
+    cannot regularize.  `neighbor_indices` is the same frozen 99-NN tensor as
+    the historical transformed-Gaussian centroid loss.
+    """
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("xyz must be [N,3]")
+    if neighbor_indices.ndim != 2 or neighbor_indices.shape[0] != len(xyz):
+        raise ValueError("neighbor_indices must be [N,K]")
+    neighbor_mean = xyz[neighbor_indices].mean(dim=1)
+    return (xyz - neighbor_mean).square().sum(dim=1).mean()
+
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
     return gauss / gauss.sum()

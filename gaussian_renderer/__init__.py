@@ -86,7 +86,8 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
         means3D_final, scales_final, rotations_final, opacity_final, color_final, dcol = means3D, scales, rotations, opacity, colors_precomp, colors_precomp*0 #hack to return 0 instead of "dcol"
     else:
         means3D_final, scales_final, rotations_final, opacity_final, (color_final, dcol) = pc.deform(means3D, scales,
-                                                                            rotations, opacity, colors_precomp, time, color_emb)
+                                                                            rotations, opacity, colors_precomp, time, color_emb,
+                                                                            camera_world_view=viewpoint_camera.world_view_transform)
     
     scales_final = pc.scaling_activation(scales_final)
 
@@ -103,10 +104,27 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
     # s0 = torch.ones(pc._scaling.shape[0], 1).cuda() * eps_s0
     scales_final_flat = scales_final.clamp_max(0.05*pc.spatial_lr_scale) #0.5) #torch.cat([scales_final[:, keep_axes], s0], dim=1)
 
+    hf_residual = None
+    if stage != 'coarse' and getattr(pc, 'hf_appearance', None) is not None and override_color is None:
+        hf_residual = pc.hf_appearance(means3D_final, viewpoint_camera.camera_center)
+        color_final = color_final + hf_residual
+
     if override_color is not None:
         color_final = override_color
 
     # rendered_image, radii, depth = rasterizer(
+    texture_arguments = {}
+    if stage == 'fine' and pc.texture_active and pc.texture_texels is not None:
+        if override_color is not None:
+            raise ValueError('Override color is incompatible with textured R6 composition')
+        from diff_gaussian_rasterization_texture import GaussianRasterizer as TexturedRasterizer
+        from utils.canonical_texture import centered_texture, ray_parameters
+        rasterizer = TexturedRasterizer(raster_settings=raster_settings)
+        texture_arguments = dict(textures=centered_texture(pc.texture_texels).contiguous(),
+            uv_params=ray_parameters(means3D_final,scales_final_flat*scaling_modifier,
+                                     rotations_final,pc.texture_axis_order,raster_settings),
+            texture_gains=(1+dcol).contiguous())
+
     rendered_image, radii, rendered_expected_coord, rendered_median_coord, rendered_expected_depth, rendered_median_depth, rendered_alpha, rendered_normal = rasterizer( #for radegs rasterizer
         means3D = means3D_final,
         means2D = means2D,
@@ -115,7 +133,7 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
         opacities = opacity,
         scales = scales_final_flat,
         rotations = rotations_final,
-        cov3D_precomp = cov3D_precomp)
+        cov3D_precomp = cov3D_precomp, **texture_arguments)
     
     rendered_image_no_dcol = None
     if show_no_dcol:
@@ -140,4 +158,7 @@ def render(viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier
             "radii": radii,
             "transformed_points": means3D_final,
             "transformed_color": color_final,
-            "dcol": dcol}
+            "dcol": dcol,
+            "hf_residual": hf_residual,
+            "micro_offset": getattr(pc, "_micro_offset", None) if stage == "fine" and getattr(pc.args, "appearance_mode", "") == "r6_additive_micro" else None,
+            "micro_raw": getattr(pc, "_micro_raw", None) if stage == "fine" and getattr(pc.args, "appearance_mode", "") == "r6_additive_micro" else None}

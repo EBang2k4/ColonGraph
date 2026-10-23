@@ -1,0 +1,14 @@
+{
+  "pass_": true,
+  "Adam_updates": 3,
+  "checkpoint": 10003,
+  "model_Adam_reload_exact": true,
+  "mask_reload_exact": true,
+  "reload_errors": {
+    "render": 0.0,
+    "depth": 0.0,
+    "alpha": 0.0,
+    "transformed_points": 0.0
+  },
+  "TRAIN_only": true
+}

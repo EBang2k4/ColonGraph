@@ -1,0 +1,15 @@
+{
+  "pass_": true,
+  "scene": "rectum",
+  "checkpoint": 30000,
+  "Gaussians": 200000,
+  "geometry_nodes": 2000,
+  "appearance_nodes": 2000,
+  "model_sha256": "7e3e297734eccd7e7004a2273ebe39e7a00a35e5320ee58f1d957f6c216fd906",
+  "Adam_sha256": "4e941030e569a58ece093c12584695d4afa18e9c9770f9c71aa668c163deab00",
+  "mask_fraction": 0.29999998211860657,
+  "camera_independent": true,
+  "original_stage11_render_errors": null,
+  "read_only": true,
+  "external_experiment_IO_blocked": true
+}

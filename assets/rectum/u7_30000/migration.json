@@ -1,0 +1,14 @@
+{
+  "pass_": true,
+  "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/stage5_confirmation_refinement/run_20261022/rectum/runs/A/J",
+  "source_sha256": "e5be97dd43c7a4b4324b0c4e61d0aeba8c0f3fe6795e9861076a48fe4b99505d",
+  "render_zero_head_errors": {
+    "render": 0.0,
+    "depth": 0.0,
+    "alpha": 0.0,
+    "transformed_points": 0.0
+  },
+  "old_Adam_exact": true,
+  "added_parameters": 390,
+  "reference": "canonical10k detached"
+}

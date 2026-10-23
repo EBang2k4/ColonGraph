@@ -1,0 +1,33 @@
+{
+  "runs": [
+    "U7_transverse",
+    "U7_rectum",
+    "P_unified_sigmoid2"
+  ],
+  "branch": {
+    "U7": "exactF010k",
+    "R": "exactStage5A10k",
+    "P": "exactStage8Pcommon5000+savedK8candidates"
+  },
+  "no_TEST_tuning": true,
+  "new_updates": {
+    "U7": 20000,
+    "R": 20000,
+    "P": 25000
+  },
+  "depth": "native fullmaxautograd .25 normalized +.30raw if fine0 ratio in[.5,2]; P original depthschedule, rawOFF",
+  "boundary": "fixed TRAIN10k bottom15percent radiusvisibility OR top15percent canonical centroid Euclidean radius; stable ID tie breaks, union may exceed15percent",
+  "opacity": "allGaussian logit max(10k,fine0) once; hard floor min(fine0,logit.5) on boundary after eachAdam; preserve old Adam moments",
+  "micro": "camera-independent .002a per coordinate interior, zero boundary; Stage9ramp10k12k; P original .005a ramp6k10k",
+  "knn": "constant.01; interiorgamma.75 ramp10k11k, boundarygamma0; samecanonical10k reference; Pnativeuncompensated",
+  "Dynamic_schedule": "exactStage9 .8Charb+.15DSSIM+3MSE/TV.0005/colorvar.0001/allnativeLR*cosine15k30kfloor.06/no12kreset",
+  "P_schedule": "exact historicalP; fixedG3 from5k, exactsavedK8candidatefile; finalnumericalidentitynotguaranteed",
+  "targets": "usersection3 fixed30k thresholds",
+  "caveats": [
+    "Stage10 faithfully implemented requested\u00b15percent gate; this is protocolchange",
+    "Gate remains binary, notcontinuous",
+    "Stage9raw effectiveweight.15; Stage11.30 doubles it",
+    "Opacity floor/offset compensation do not guarantee coverage or physical stability; mask based onlyTRAIN",
+    "P5k removes graphrebuild variation; later CUDA/optimization variation stillpossible"
+  ]
+}

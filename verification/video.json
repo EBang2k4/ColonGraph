@@ -1,0 +1,9 @@
+{
+  "pass_": true,
+  "video_size": [
+    650,
+    650
+  ],
+  "frames": 2,
+  "source": "TEST reconstruction; macro_block_size=1, original650x650 preserved"
+}

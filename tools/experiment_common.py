@@ -21,7 +21,10 @@ def load_scene(path, iteration=30000):
     lp, hp, op, pp = ModelParams(parser), ModelHiddenParams(parser), OptimizationParams(parser), PipelineParams(parser)
     args = parser.parse_args([])
     for key, value in read_config(Path(path) / "cfg_args").items():
-        setattr(args, key, value)
+        from utils.bundle_paths import resolve
+        setattr(args, key, resolve(value))
+    import os
+    if os.environ.get('COLONGRAPH_DATASET'):args.source_path=os.environ['COLONGRAPH_DATASET']
     args.model_path = str(path)
     model = GaussianModel(args.sh_degree, hp.extract(args))
     scene = Scene(lp.extract(args), model, load_iteration=iteration, shuffle=False)

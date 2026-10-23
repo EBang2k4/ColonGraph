@@ -1,0 +1,6 @@
+{
+  "state": "COMPLETE",
+  "checkpoint": 10003,
+  "updates": 3,
+  "model": "/home/robot/colongraph/ColonGraph_unified/verification/transverse_smoke/model"
+}

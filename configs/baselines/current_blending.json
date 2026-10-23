@@ -1,0 +1,11 @@
+{
+  "method": "J \u2014 GGAS-v2 Spatial-only Learned K8",
+  "main": "J",
+  "study": "/home/robot/colongraph/ColonGraph-texture/output/experiments/j_baseline30k/fresh_20261011",
+  "protocol": "/home/robot/colongraph/ColonGraph-texture/output/experiments/j_baseline30k/fresh_20261011/protocol.json",
+  "per_scene_configs": {
+    "c1_sigmoid2_t4_v4": "/home/robot/colongraph/ColonGraph-texture/configs/baselines/ggas_v2_j_c1_sigmoid2_t4_v4.json",
+    "c1_sigmoid1_t4_v4": "/home/robot/colongraph/ColonGraph-texture/configs/baselines/ggas_v2_j_c1_sigmoid1_t4_v4.json"
+  },
+  "anatomical_motion_certified": false
+}

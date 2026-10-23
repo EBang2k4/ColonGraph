@@ -25,6 +25,10 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation, cdist
 from scene.deformation import (deform_network, NodeDeformationMLP,
                                NodeConditionedResidualAppearance)
 from scene.deformation_graph import SparseDeformationGraph
+from utils.node_arap import CanonicalNodeARAPGraph
+from utils.gaussian_isometry import LocalGaussianIsometryGraph
+from utils.node_edge_graph import NodeEdgeConsistencyGraph
+from utils.graph_forward import GraphMotionResidual, residual_statistics
 from scene.regulation import compute_plane_smoothness
 from cuvs.neighbors import ivf_flat
 
@@ -73,8 +77,22 @@ class GaussianModel:
         if self.deformation_mode not in ("original", "node"):
             raise ValueError("deformation_mode must be original or node")
         self.deformation_graph = None
+        self.skinning = None
+        self.appearance_graph = None
+        self.node_arap_graph = None
+        self.gaussian_isometry_graph = None
+        self.node_edge_graph = None
+        self.graph_motion_residual = None
+        self.surface_children = None
+        self.graph_forward_changed_mask = None
+        self.graph_forward_reference_data = None
+        self.geometry_blending_cache = None
         self.node_mlp = None
         self.appearance_model = None
+        self.hf_appearance = None
+        self.texture_texels = None
+        self.texture_axis_order = None
+        self.texture_active = False
         self.profile_deformation = False
         self.last_deformation_forward_ms = None
         self.deformation_perc = args.deformation_perc
@@ -108,6 +126,20 @@ class GaussianModel:
         self.node_mlp.configure_position_normalization(self._xyz.detach())
         print(f"Initialized deformation nodes AFTER coarse: N={len(self._xyz)}, M={num_nodes}, K={k}; fixed canonical associations")
 
+    def initialize_texture(self):
+        from utils.canonical_texture import canonical_axis_order
+        if self.texture_texels is None:
+            self.texture_texels = nn.Parameter(self._xyz.new_zeros((len(self._xyz),9,3)))
+            self.texture_axis_order = canonical_axis_order(self.get_scaling)
+        if self.texture_texels.shape != (len(self._xyz),9,3):
+            raise ValueError('Texture topology differs from Gaussian topology')
+
+    def add_texture_optimizer_group(self):
+        self.initialize_texture()
+        if not any(g.get('name') == 'texture' for g in self.optimizer.param_groups):
+            self.optimizer.add_param_group(dict(params=[self.texture_texels],
+                lr=self.args.texture_lr_init,name='texture'))
+
     def initialize_appearance_model(self):
         """Create the optional fine-stage appearance branch after graph setup."""
         if self.color_model == "hexplane":
@@ -120,25 +152,219 @@ class GaussianModel:
             raise ValueError("R6 requires the existing K=4 Gaussian-to-node graph")
         if self.args.use_do or self.args.no_dcol:
             raise ValueError("R6 requires use_do=False and no_dcol=False")
-        self.appearance_model = NodeConditionedResidualAppearance(
-            self.args, len(self.deformation_graph.node_xyz)).to(self._xyz.device)
-        print("Initialized R6 appearance: node_dim={} input=37 eta={} tanh={} seed={}".format(
-            self.args.node_appearance_dim, self.args.color_residual_scale,
-            self.args.color_residual_tanh, self.args.appearance_seed))
+        graph_mode = getattr(self.args, "node_appearance_graph_mode", "shared")
+        if graph_mode not in ("shared", "fixed_initial"):
+            raise ValueError("node_appearance_graph_mode must be shared or fixed_initial")
+        if graph_mode == "fixed_initial" and self.appearance_graph is None:
+            graph = self.deformation_graph
+            self.appearance_graph = SparseDeformationGraph(
+                graph.node_xyz, graph.gaussian_node_indices, graph.gaussian_node_weights)
+        appearance_graph = (self.appearance_graph if graph_mode == "fixed_initial"
+                            else self.deformation_graph)
+        from utils.r7_core import create
+        self.appearance_model = create(
+            self.args, len(appearance_graph.node_xyz)).to(self._xyz.device)
+        from utils.r6_hf import initialize
+        initialize(self)
+        print("Initialized R6 appearance: node_dim={} input={} eta={} tanh={} seed={} graph={}".format(
+            self.args.node_appearance_dim, self.appearance_model.residual_mlp[0].in_features if hasattr(self.appearance_model,"residual_mlp") else "mode-specific", self.args.color_residual_scale,
+            self.args.color_residual_tanh, self.args.appearance_seed, graph_mode))
 
-    def _query_node_motion(self, time):
+    def _query_base_node_motion(self, time):
         if self.deformation_graph is None:
             raise RuntimeError("Initialize nodes after coarse before fine rendering")
         if len(self._xyz) != len(self.deformation_graph.gaussian_node_indices):
             raise RuntimeError("Fixed node associations require unchanged Gaussian topology")
-        return self.node_mlp(self.deformation_graph.node_xyz, time)
+        values = self.node_mlp(self.deformation_graph.node_xyz, time)
+        if hasattr(self.graph_motion_residual, 'initialize_transforms'):
+            values = self.graph_motion_residual.initialize_transforms(values)
+        return values
+
+    def _query_node_motion(self, time):
+        base_translation, rotation, scale = self._query_base_node_motion(time)
+        if self.graph_motion_residual is not None:
+            translation, _ = self.graph_motion_residual(base_translation)
+        else:
+            translation = base_translation
+        return translation, rotation, scale
+
+    def initialize_graph_forward(self, path):
+        """Install the fixed repaired K4 and optional message-passing residual."""
+        mode = getattr(self.args, "graph_forward_mode", "none")
+        if mode not in ("g1", "g2", "g3", "g4"):
+            raise ValueError("graph_forward_mode must be g1, g2, g3 or g4")
+        payload = torch.load(path, map_location=self._xyz.device, weights_only=True)
+        if payload.get("format_version") != 1:
+            raise ValueError("Unsupported graph-forward reference format")
+        if (getattr(self.args, "graph_forward_adaptive", False) and
+                getattr(self.args, "adaptive_g3_state", "")):
+            # Resume local-grown G3 without reinstalling the original 2000 K4.
+            residual = self.graph_motion_residual
+            count = len(payload["canonical_node_xyz"])
+            edges = len(payload["trajectory_gated_edge_weights"])
+            if (mode != "g3" or residual is None or residual.mode != "g3" or
+                    not torch.equal(self.deformation_graph.node_xyz[:count], payload["canonical_node_xyz"]) or
+                    not torch.equal(residual.edge_indices[:, :edges], payload["surface_edge_indices"]) or
+                    not torch.equal(residual.edge_weights[:edges], payload["trajectory_gated_edge_weights"])):
+                raise ValueError("Adaptive G3 resume changed the frozen backbone/reference edges")
+            self.graph_forward_reference_data = payload
+            return
+        if not torch.equal(payload["canonical_node_xyz"], self.deformation_graph.node_xyz):
+            raise ValueError("Graph-forward canonical nodes differ from deformation graph")
+        current_indices = self.deformation_graph.gaussian_node_indices
+        current_weights = self.deformation_graph.gaussian_node_weights
+        is_original = (torch.equal(current_indices, payload["original_k4_indices"]) and
+                       torch.equal(current_weights, payload["original_k4_weights"]))
+        is_repaired = (torch.equal(current_indices, payload["graph_k4_indices"]) and
+                       torch.equal(current_weights, payload["graph_k4_weights"]))
+        is_blending_variant = self.geometry_blending_cache is not None
+        if is_blending_variant:
+            from utils.geometry_blending import validate_cache
+            validate_cache(self, self.geometry_blending_cache, require_weights=True)
+            if (not torch.equal(current_indices, payload["graph_k4_indices"]) and
+                    self.geometry_blending_cache.get('refresh_policy') != 'neighbors_and_weights'):
+                raise ValueError("Blending variant changed repaired K4 indices")
+        if not is_original and not is_repaired and not is_blending_variant:
+            raise ValueError("Current Gaussian K4 is neither reference original nor repaired K4")
+        if is_original:
+            self.deformation_graph = SparseDeformationGraph(
+                self.deformation_graph.node_xyz,
+                payload["graph_k4_indices"], payload["graph_k4_weights"])
+        self.graph_forward_changed_mask = payload["changed_mask"].to(self._xyz.device)
+        self.graph_forward_reference_data = payload
+        if mode in ("g2", "g3", "g4"):
+            weights_key = ("surface_edge_weights" if mode == "g2" else
+                           "trajectory_gated_edge_weights")
+            if self.graph_motion_residual is None:
+                self.graph_motion_residual = GraphMotionResidual(
+                    payload["canonical_node_xyz"], payload["surface_edge_indices"],
+                    payload[weights_key], self.args.graph_forward_hidden_dim,
+                    self.args.graph_forward_seed, mode,
+                    getattr(self.args, "graph_forward_cancellation_alpha", 0.10)).to(self._xyz.device)
+            elif self.graph_motion_residual.mode != mode:
+                raise ValueError("Checkpoint graph residual mode differs from requested mode")
+        elif self.graph_motion_residual is not None:
+            raise ValueError("G1 must not contain a graph residual decoder")
+        if self.graph_motion_residual is not None:
+            self.graph_motion_residual.deterministic_aggregation = bool(
+                getattr(self.args, "graph_forward_deterministic", False))
+        print("Initialized graph-forward branch: mode={} changed_k4={:.6f} "
+              "fallback={:.6f} residual={}".format(
+                  mode, float(payload["audit"]["changed_ratio"]),
+                  float(payload["audit"]["fallback_ratio"]),
+                  self.graph_motion_residual is not None), flush=True)
+        if self.graph_motion_residual is not None:
+            print("Graph deterministic aggregation={} (rasterizer unchanged)".format(
+                self.graph_motion_residual.deterministic_aggregation), flush=True)
+
+    @torch.no_grad()
+    def graph_forward_diagnostics(self, times):
+        base_rows, residual_rows, final_rows = [], [], []
+        for time_value in times:
+            base, _, _ = self._query_base_node_motion(time_value)
+            if self.graph_motion_residual is None:
+                final, residual = base, torch.zeros_like(base)
+            else:
+                final, residual = self.graph_motion_residual(base)
+            base_rows.append(base)
+            residual_rows.append(residual)
+            final_rows.append(final)
+        base = torch.stack(base_rows)
+        residual = torch.stack(residual_rows)
+        final = torch.stack(final_rows)
+        result = residual_statistics(base, residual)
+        motion = final.norm(dim=-1).flatten()
+        result["motion"] = {
+            "median": float(motion.median()),
+            "p90": float(torch.quantile(motion, .9)),
+            "p95": float(torch.quantile(motion, .95)),
+            "max": float(motion.max()),
+        }
+        if self.graph_motion_residual is not None and self.graph_motion_residual.mode == "g4":
+            raw = torch.stack([
+                self.graph_motion_residual.decoder(
+                    self.graph_motion_residual.aggregate(value)) for value in base])
+            norms = base.norm(dim=-1, keepdim=True)
+            unit = base / norms.clamp_min(1e-8)
+            parallel = (raw * unit).sum(-1)
+            active = ((parallel < -self.graph_motion_residual.cancellation_alpha * norms.squeeze(-1)) &
+                      (norms.squeeze(-1) > 1e-8))
+            result["motion_guard"] = {
+                "alpha": self.graph_motion_residual.cancellation_alpha,
+                "active_fraction": float(active.float().mean()),
+                "correction_mean": float((residual - raw).norm(dim=-1).mean()),
+                "raw_residual_ratio_p95": float(torch.quantile(
+                    (raw.norm(dim=-1) / norms.squeeze(-1).clamp_min(1e-8)).flatten(), .95)),
+            }
+        return result
 
     def deform_from_nodes(self, time):
-        return self.deformation_graph.blend(*self._query_node_motion(time))
+        values = self._query_node_motion(time)
+        if self.skinning is not None:
+            return self.skinning.blend(*values)
+        if hasattr(self.graph_motion_residual, 'blend_gaussians'):
+            return self.graph_motion_residual.blend_gaussians(self.deformation_graph, values)
+        dx, dr, ds = self.deformation_graph.blend(*values)
+        if self.surface_children is not None:
+            dx = self.surface_children.apply(dx, time)
+        return dx, dr, ds
+
+    def node_positions_at_time(self, time):
+        """World-space deformation-node centers for node-level regularizers."""
+        node_translation, _, _ = self._query_node_motion(time)
+        return self.deformation_graph.node_xyz + node_translation
+
+    def initialize_arap_graph(self, k=None):
+        if self.deformation_graph is None:
+            raise RuntimeError("Initialize deformation nodes before the ARAP graph")
+        k = int(k if k is not None else self.args.arap_k)
+        self.node_arap_graph = CanonicalNodeARAPGraph.build(
+            self.deformation_graph.node_xyz.detach(), k=k).to(self._xyz.device)
+        print("Initialized canonical symmetric node ARAP graph: "
+              f"M={len(self.deformation_graph.node_xyz)} K={k} "
+              f"max_degree={self.node_arap_graph.neighbor_indices.shape[1]}")
+
+    def initialize_gaussian_isometry_graph(self, candidate_indices=None, k=None,
+                                           minimum_degree=None):
+        """Build the fixed surface-aware graph used only by E2."""
+        if self.deformation_graph is None:
+            raise RuntimeError("Initialize deformation nodes before Gaussian isometry")
+        candidate_indices = (self.closest_point_indices if candidate_indices is None
+                             else candidate_indices)
+        k = int(k if k is not None else self.args.local_isometry_k)
+        minimum_degree = int(minimum_degree if minimum_degree is not None else
+                             self.args.local_isometry_min_degree)
+        self.gaussian_isometry_graph = LocalGaussianIsometryGraph.build(
+            self._xyz.detach(), candidate_indices,
+            self.deformation_graph.gaussian_node_indices,
+            candidate_k=k, minimum_degree=minimum_degree)
+        stats = self.gaussian_isometry_graph.graph_statistics()
+        print("Initialized fixed local Gaussian-isometry graph: " +
+              str(stats), flush=True)
+
+    def load_node_edge_graph(self, path):
+        payload = torch.load(path, map_location=self._xyz.device, weights_only=True)
+        graph = NodeEdgeConsistencyGraph.from_state_dict_payload(
+            payload, device=self._xyz.device)
+        if not torch.equal(graph.canonical_xyz, self.deformation_graph.node_xyz):
+            raise ValueError("Node-edge graph canonical nodes differ from deformation graph")
+        self.node_edge_graph = graph
+        degree = graph.degree.float()
+        print("Loaded fixed node-edge graph: topology={} edges={} degree_mean={:.3f} "
+              "degree_min={} degree_max={}".format(
+                  graph.topology, graph.edge_indices.shape[1], float(degree.mean()),
+                  int(degree.min()), int(degree.max())), flush=True)
 
     def deform_geometry_from_nodes(self, time):
         node_motion = self._query_node_motion(time)
-        dx, dr, ds = self.deformation_graph.blend(*node_motion)
+        if self.skinning is not None:
+            dx, dr, ds = self.skinning.blend(*node_motion)
+        elif hasattr(self.graph_motion_residual, 'blend_gaussians'):
+            dx, dr, ds = self.graph_motion_residual.blend_gaussians(self.deformation_graph, node_motion)
+        else:
+            dx, dr, ds = self.deformation_graph.blend(*node_motion)
+        if self.surface_children is not None:
+            dx = self.surface_children.apply(dx, time)
         if self.args.no_dx:
             xyz = self._xyz
         elif self.args.node_position_mode == "local_frame":
@@ -146,13 +372,13 @@ class GaussianModel:
         else:
             xyz = self._xyz + dx
         scales = self._scaling if self.args.no_ds else self._scaling + torch.clamp(
-            ds, -0.1 * self._scaling.abs(), 0.1 * self._scaling.abs())
+            ds, -getattr(self.args,"node_scale_residual_ratio",.1) * self._scaling.abs(), getattr(self.args,"node_scale_residual_ratio",.1) * self._scaling.abs())
         rotations = self._rotation if self.args.no_dr else self._rotation + torch.clamp(
-            dr, -0.1 * self._rotation.abs(), 0.1 * self._rotation.abs())
+            dr, -getattr(self.args,"node_rotation_residual_ratio",.1) * self._rotation.abs(), getattr(self.args,"node_rotation_residual_ratio",.1) * self._rotation.abs())
         # Renderer applies the existing normalize / exp / scale clamp afterwards.
         return xyz, scales, rotations
 
-    def deform(self, points, scales, rotations, opacity, colors, time, color_embedding):
+    def deform(self, points, scales, rotations, opacity, colors, time, color_embedding, camera_world_view=None):
         if self.profile_deformation:
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
@@ -162,10 +388,32 @@ class GaussianModel:
             if self.color_model == "node_residual_mlp":
                 if self.appearance_model is None:
                     raise RuntimeError("R6 appearance was not initialized or loaded")
-                appearance = self.appearance_model(
-                    points, time, colors, color_embedding,
-                    self.deformation_graph.gaussian_node_indices,
-                    self.deformation_graph.gaussian_node_weights)
+                appearance_graph = (self.appearance_graph
+                                    if self.appearance_graph is not None
+                                    else self.deformation_graph)
+                motion_kwargs = {}
+                if getattr(self.args, "appearance_mode", "r6") in ("r7_core", "r7_v2"):
+                    # Detached conditioning only. Normal rendering geometry stays live.
+                    with torch.no_grad():
+                        motion_kwargs["motion"] = self._query_node_motion(time)
+                    if self.args.appearance_mode == "r7_v2":
+                        motion_kwargs["gaussian_displacement"] = (xyz - points).detach()
+                if getattr(self.args, "appearance_mode", "r6") == "r6_speccam":
+                    from utils.stage3 import camera_cues
+                    motion_kwargs["camera_input"] = camera_cues(xyz, camera_world_view, self.appearance_model.camera_scale)
+                if getattr(self.args, "appearance_mode", "r6") == "r6_additive_micro":
+                    appearance, self._micro_offset, self._micro_raw = self.appearance_model.forward_micro(
+                        time, colors, color_embedding, appearance_graph.gaussian_node_indices,
+                        appearance_graph.gaussian_node_weights, self.node_mlp.position_scale)
+                    if hasattr(self,'stage11_boundary'):
+                        alpha=((self.appearance_model.micro_iteration-10000)/2000.).clamp(0.,1.)
+                        self._micro_offset=alpha*.002*self.node_mlp.position_scale.detach()*self._micro_raw*(~self.stage11_boundary)[:,None]
+                    xyz = xyz + self._micro_offset
+                else:
+                    appearance = self.appearance_model(
+                        points, time, colors, color_embedding,
+                        appearance_graph.gaussian_node_indices,
+                        appearance_graph.gaussian_node_weights, **motion_kwargs)
             else:
                 opacity, appearance = self._deformation.deformation_net.forward_color_only(
                     points, opacity, colors, time, color_embedding)
@@ -417,6 +665,9 @@ class GaussianModel:
         ]
         if grid_parameters:
             l.insert(2, {'params': grid_parameters, 'lr': training_args.grid_lr_init, "name": "grid"})
+        if self.hf_appearance is not None:
+            l.append({'params': list(self.hf_appearance.parameters()),
+                      'lr': getattr(self.args, 'hf_lr', 1e-4), 'name': 'r6_hf'})
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -462,6 +713,12 @@ class GaussianModel:
         setattr(self, name, new_param)
         
     def update_learning_rate(self, iteration, stage='coarse'):
+        if stage == 'fine' and getattr(self.args,'texture_enabled',False):
+            self.texture_active = iteration > self.args.texture_activate_iteration
+            if self.texture_active:
+                self.add_texture_optimizer_group()
+                self.update_lr('texture',self.args.texture_lr_init if iteration<=25000 else self.args.texture_lr_final)
+
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
@@ -476,7 +733,25 @@ class GaussianModel:
                 lr = self.deformation_scheduler_args(iteration)
                 param_group['lr'] = lr
                 # return lr
-                
+
+            elif param_group["name"] in ("graph_residual", "surface_children"):
+                param_group['lr'] = self.deformation_scheduler_args(iteration)
+
+        if stage == 'fine' and (getattr(self.args,'freeze_geometry',False) or
+                getattr(self.args,'geometry_study_frozen',False)):
+            for group in self.optimizer.param_groups:
+                if not any(p.requires_grad for p in group['params']):group['lr']=0.
+
+    def add_graph_residual_optimizer_group(self):
+        if self.graph_motion_residual is None:
+            return
+        if any(group.get("name") == "graph_residual" for group in self.optimizer.param_groups):
+            return
+        self.optimizer.add_param_group({
+            "params": list(self.graph_motion_residual.parameters()),
+            "lr": 0.0,
+            "name": "graph_residual",
+        })
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -508,16 +783,53 @@ class GaussianModel:
             self.args.node_position_mode = state["config"].get("node_position_mode", "direct")
             self.args.node_position_normalization = state["config"].get("node_position_normalization", "none")
             for key, value in state["config"].items():
-                setattr(self.args, key, value)
+                from utils.bundle_paths import resolve
+                setattr(self.args, key, resolve(value))
             self.deformation_mode = "node"
             self.color_model = state["config"].get("color_model", self.color_model)
             graph = state["graph"]
             self.deformation_graph = SparseDeformationGraph(
                 graph["node_xyz"], graph["gaussian_node_indices"], graph["gaussian_node_weights"])
+            appearance_graph = state.get("appearance_graph")
+            self.appearance_graph = (None if appearance_graph is None else
+                SparseDeformationGraph(
+                    appearance_graph["node_xyz"],
+                    appearance_graph["gaussian_node_indices"],
+                    appearance_graph["gaussian_node_weights"]))
             self.node_mlp = NodeDeformationMLP(self.args.node_mlp_width, self.args.node_mlp_depth,
                                               self.args.posebase_pe, self.args.timebase_pe,
                                               self.args.node_position_normalization).cuda()
             self.node_mlp.load_state_dict(state["mlp"])
+            arap_state = state.get("node_arap_graph")
+            self.node_arap_graph = (None if arap_state is None else
+                CanonicalNodeARAPGraph.from_state_dict_payload(
+                    arap_state, device=self._xyz.device))
+            isometry_state = state.get("gaussian_isometry_graph")
+            self.gaussian_isometry_graph = (None if isometry_state is None else
+                LocalGaussianIsometryGraph.from_state_dict_payload(
+                    isometry_state, device=self._xyz.device))
+            node_edge_state = state.get("node_edge_graph")
+            self.node_edge_graph = (None if node_edge_state is None else
+                NodeEdgeConsistencyGraph.from_state_dict_payload(
+                    node_edge_state, device=self._xyz.device))
+            graph_forward_state = state.get("graph_motion_residual")
+            self.graph_motion_residual = (None if graph_forward_state is None else
+                GraphMotionResidual.from_state_dict_payload(
+                    graph_forward_state, device=self._xyz.device))
+            from utils.surface_children import SurfaceChildren
+            child_state = state.get("surface_children")
+            self.surface_children = (None if child_state is None else
+                SurfaceChildren.from_payload(child_state, self._xyz.device))
+            changed_mask = state.get("graph_forward_changed_mask")
+            self.graph_forward_changed_mask = (None if changed_mask is None else
+                                                changed_mask.to(self._xyz.device))
+            blending_path = os.path.join(path, 'geometry_blending.pth')
+            if os.path.exists(blending_path):
+                from utils.geometry_blending import validate_cache
+                self.geometry_blending_cache = torch.load(blending_path, map_location='cpu', weights_only=True)
+                validate_cache(self, self.geometry_blending_cache, require_weights=True)
+                self.args.geometry_blend_mode = self.geometry_blending_cache['mode']
+                self.args.geometry_blend_beta = self.geometry_blending_cache['beta']
         elif self.deformation_mode == "node":
             raise FileNotFoundError(f"Missing fixed graph checkpoint: {node_path}")
         
@@ -535,36 +847,110 @@ class GaussianModel:
         if os.path.exists(os.path.join(path, "closest_point_indices.pth")):
             self.closest_point_indices = torch.load(os.path.join(path,"closest_point_indices.pth"),map_location="cuda")
 
+        skinning_path = os.path.join(path, "skinning.pth")
+        if os.path.isfile(skinning_path):
+            from utils.ggas import AdaptiveSkinning
+            self.skinning = AdaptiveSkinning.from_payload(torch.load(skinning_path, map_location="cuda", weights_only=True), self._xyz.device)
+        elif getattr(self.args, "ggas_variant", "none") not in ("none", "A_BASE") and "ggas" in path:
+            raise FileNotFoundError("Missing required native skinning state: " + skinning_path)
+
+        texture_path = os.path.join(path,'texture.pth')
+        if os.path.isfile(texture_path):
+            texture_state = torch.load(texture_path,map_location=self._xyz.device,weights_only=True)
+            self.texture_texels = nn.Parameter(texture_state['texels'])
+            self.texture_axis_order = texture_state['axis_order']
+            self.texture_active = bool(texture_state['active'])
+            self.args.texture_enabled = True
+            self.initialize_texture()
+
         appearance_path = os.path.join(path, "appearance.pth")
         if os.path.exists(appearance_path):
             appearance_state = torch.load(appearance_path, map_location="cuda", weights_only=True)
             config = appearance_state["config"]
+            # Old checkpoints predate appearance_mode and always contain R6.
+            self.args.appearance_mode = config.get("appearance_mode", "r6")
             self.color_model = config["color_model"]
             for key, value in config.items():
                 setattr(self.args, key, value)
             self.initialize_appearance_model()
             self.appearance_model.load_state_dict(appearance_state["state_dict"], strict=True)
+        hf_path = os.path.join(path, 'r6_hf.pth')
+        if os.path.isfile(hf_path):
+            from utils.r6_hf import load
+            load(self, torch.load(hf_path, map_location=self._xyz.device, weights_only=True))
+        elif getattr(self.args, 'appearance_mode', 'r6') == 'r6_hf':
+            raise FileNotFoundError('R6-HF checkpoint lacks ' + hf_path)
         
 
     def save_deformation(self, path):
+        if self.hf_appearance is not None:
+            torch.save(self.hf_appearance.payload(), os.path.join(path, 'r6_hf.pth'))
+        if self.skinning is not None:
+            torch.save(self.skinning.payload(), os.path.join(path, "skinning.pth"))
+        if self.geometry_blending_cache is not None:
+            from utils.geometry_blending import validate_cache
+            validate_cache(self, self.geometry_blending_cache, require_weights=True)
+            torch.save(self.geometry_blending_cache, os.path.join(path, 'geometry_blending.pth'))
+        if self.texture_texels is not None:
+            torch.save(dict(format_version=1,texels=self.texture_texels.detach(),
+                axis_order=self.texture_axis_order,active=self.texture_active),
+                os.path.join(path,'texture.pth'))
         torch.save(self._deformation.state_dict(),os.path.join(path, "deformation.pth"))
         torch.save(self._deformation_table,os.path.join(path, "deformation_table.pth"))
         if self.deformation_graph is not None:
             node_config_keys = (
+                "node_scale_residual_ratio", "node_rotation_residual_ratio",
                 "num_nodes", "node_k", "node_mlp_width", "node_mlp_depth",
                 "posebase_pe", "timebase_pe", "node_position_mode",
                 "node_position_normalization", "color_model",
                 "color_residual_scale", "color_residual_tanh",
-                "node_appearance_dim", "appearance_seed",
+                "node_appearance_dim", "node_appearance_graph_mode", "appearance_seed",
+                "node_sampling", "node_sampling_alpha",
+                "node_sampling_importance_reference",
+                "node_sampling_gradient_source",
+                "node_importance_extra_nodes",
+                "geometry_regularizer", "arap_weight", "arap_k",
+                "arap_eval_k", "arap_seed", "experiment_seed",
+                "canonical_laplacian_weight", "reset_fine_rng",
+                "local_isometry_weight", "local_isometry_k",
+                "local_isometry_min_degree", "local_isometry_temporal_window",
+                "local_isometry_seed",
+                "node_edge_graph_reference", "node_edge_weight",
+                "node_edge_start_iteration", "node_edge_seed",
+                "node_edge_gradient_audit_iterations",
+                "graph_forward_mode", "graph_forward_reference",
+                "graph_forward_hidden_dim", "graph_forward_seed",
+                "graph_forward_monitor_iterations",
+                "graph_forward_cancellation_alpha", "graph_forward_motion_reference",
+                "graph_forward_deterministic",
+                "surface_graph_refine", "surface_child_mode",
             )
             torch.save({"graph": self.deformation_graph.state_dict(),
+                        "appearance_graph": (None if self.appearance_graph is None else
+                                             self.appearance_graph.state_dict()),
                         "mlp": self.node_mlp.state_dict(),
-                        "config": {key: getattr(self.args, key) for key in node_config_keys}},
+                        "node_arap_graph": (None if self.node_arap_graph is None else
+                                            self.node_arap_graph.state_dict_payload()),
+                        "gaussian_isometry_graph": (
+                            None if self.gaussian_isometry_graph is None else
+                            self.gaussian_isometry_graph.state_dict_payload()),
+                        "node_edge_graph": (
+                            None if self.node_edge_graph is None else
+                            self.node_edge_graph.state_dict_payload()),
+                        "graph_motion_residual": (
+                            None if self.graph_motion_residual is None else
+                            self.graph_motion_residual.state_dict_payload()),
+                        "graph_forward_changed_mask": self.graph_forward_changed_mask,
+                        "surface_children": (None if self.surface_children is None else
+                                             self.surface_children.payload()),
+                        "config": {key: __import__("utils.bundle_paths", fromlist=["portable"]).portable(getattr(self.args, key)) for key in node_config_keys}},
                        os.path.join(path, "deformation_nodes.pth"))
         if self.appearance_model is not None:
             appearance_config = {key: getattr(self.args, key) for key in (
                 "color_model", "color_residual_scale", "color_residual_tanh",
-                "node_appearance_dim", "appearance_seed")}
+                "node_appearance_dim", "node_appearance_graph_mode", "appearance_seed")}
+            appearance_config["appearance_mode"] = getattr(self.args, "appearance_mode", "r6")
+            appearance_config["r6_additive_cap"] = getattr(self.args, "r6_additive_cap", .15)
             torch.save({"format_version": 1, "config": appearance_config,
                         "state_dict": self.appearance_model.state_dict()},
                        os.path.join(path, "appearance.pth"))

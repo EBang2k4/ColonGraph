@@ -1,0 +1,7 @@
+{
+  "local_extensions_built_from_submodules": [
+    "diff-gaussian-rasterization==0.0.0",
+    "diff-gaussian-rasterization-texture==0.0.0",
+    "simple-knn==0.0.0"
+  ]
+}

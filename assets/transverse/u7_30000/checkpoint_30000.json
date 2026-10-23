@@ -1,0 +1,90 @@
+{
+  "sha256": "2517e2a8a7659d039e7886aa5813cec6b6c2561bb36253efa87349072f057767",
+  "model_sha256": "7f15f83102d6870a670d88006825f496d76425cda25dcb4d4c34a1b9f215519d",
+  "optimizer_sha256": "570be0cfedce4a90e8d72d122cd7788da8f3db9a4e776baa5c761f4d52daf171",
+  "appearance": "R6",
+  "appearance_parameters": 3823177,
+  "trainable_groups": {
+    "xyz": 600000,
+    "deformation": 66835,
+    "f_dc": 600000,
+    "opacity": 200000,
+    "scaling": 600000,
+    "rotation": 800000,
+    "deformation_table": 3200000,
+    "graph_residual": 4803,
+    "skinning": 1600000
+  },
+  "optimizer_steps": {
+    "xyz": [
+      30000
+    ],
+    "deformation": [
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      30000,
+      20000,
+      20000,
+      20000,
+      20000
+    ],
+    "f_dc": [
+      30000
+    ],
+    "opacity": [
+      29997
+    ],
+    "scaling": [
+      30000
+    ],
+    "rotation": [
+      30000
+    ],
+    "deformation_table": [
+      30000
+    ],
+    "graph_residual": [
+      28000,
+      28000,
+      28000,
+      28000,
+      28000,
+      28000
+    ],
+    "skinning": [
+      25000
+    ]
+  },
+  "requires_grad_fields": {
+    "_xyz": true,
+    "_scaling": true,
+    "_rotation": true,
+    "_opacity": true,
+    "features": true,
+    "_deformation_table": true
+  },
+  "actual_trainable_groups": {
+    "xyz": 600000,
+    "deformation": 66835,
+    "f_dc": 600000,
+    "opacity": 200000,
+    "scaling": 600000,
+    "rotation": 800000,
+    "deformation_table": 3200000,
+    "graph_residual": 4803,
+    "skinning": 1600000
+  },
+  "R6_all_appearance_trainable": true
+}

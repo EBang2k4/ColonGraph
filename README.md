@@ -1,80 +1,95 @@
-# ColonSplat: Reconstruction of Peristaltic Motion in Colonoscopy with Dynamic Gaussian Splatting  
+# ColonGraph_unified — U7 baseline
 
-## Clone repository
+Đóng gói baseline **Stage 11 U7** cho DynamicColon `data_transverse` và `data_rectum`.
+Code, checkpoint, mask và graph reference nằm trong thư mục này. Dataset và Conda environment được dùng riêng.
 
-```bash
-git clone --recursive https://github.com/wMito/ColonSplat.git
-cd ColonSplat
-```
-
-## Environment
-
-Install conda environment. Please note we use gaussian rasterizer from https://github.com/HKUST-SAIL/RaDe-GS.  
+## Dùng ngay trên máy hiện tại
 
 ```bash
-conda create -n env python=3.9 
-conda activate env
+cd /home/robot/colongraph/ColonGraph_unified
 
-pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
+# Kiểm tra SHA của bản đóng gói (chỉ đọc).
+./run.sh --help
+python3 scripts/verify_package.py
 
-python -m pip install "setuptools<81"
-pip install cuvs-cu12 --extra-index-url https://pypi.nvidia.com
+# Kiểm tra checkpoint U7 30k, mask/floor và model/Adam state.
+CUDA_VISIBLE_DEVICES=0 ./run.sh validate --scene transverse
+CUDA_VISIBLE_DEVICES=1 ./run.sh validate --scene rectum
 
-pip install -r requirements.txt
+# Xuất video reconstruction của TEST200.
+CUDA_VISIBLE_DEVICES=0 ./run.sh render --scene transverse
+CUDA_VISIBLE_DEVICES=1 ./run.sh render --scene rectum
 
-pip install --no-build-isolation submodules/diff-gaussian-rasterization-radegs
-pip install --no-build-isolation submodules/simple-knn
+# Đánh giá TEST200: RGB, depth, FPS và hai chiều CH/HD95.
+CUDA_VISIBLE_DEVICES=0 ./run.sh evaluate --scene transverse --geometry
+CUDA_VISIBLE_DEVICES=1 ./run.sh evaluate --scene rectum --geometry
 
+# Kiểm tra train 3 updates từ prefix 10k, rồi cold-load model/Adam.
+CUDA_VISIBLE_DEVICES=0 ./run.sh smoke --scene transverse --steps 3
+
+# Train lại phần U7: prefix 10k được đóng gói -> fine 30k.
+CUDA_VISIBLE_DEVICES=0 ./run.sh train --scene transverse --out output/transverse_retrain
+CUDA_VISIBLE_DEVICES=1 ./run.sh train --scene rectum --out output/rectum_retrain
 ```
 
-## To run training, testing and visualisation simply run:
-```bash
-# Train on C3VDv2
-bash run.sh
-# Train on DynamicColon
-bash run_custom_ds.sh
-```
+`run.sh` kích hoạt Conda `.env` ở thư mục cha. Có thể chỉ định `COLONGRAPH_CONDA_PREFIX` và `COLONGRAPH_CONDA_BASE`; hoặc source `activate.sh` rồi dùng `python u7.py ...`.
 
-## Stable B1-bbox + R6 baseline
+Dataset mặc định: `../datasets/DynamicColon/data_{transverse,rectum}`. Dùng `--data /duong/dan/data_transverse` khi chuyển dataset sang vị trí khác. Metadata của scene được kiểm tra trước khi dùng prefix đã đóng gói.
 
-The reproducible backup baseline is tagged `b1-bbox-r6-stable-v1`. It uses
-standard deterministic FPS, a fixed 2,000-node K=4 inverse-distance graph,
-direct node translation with bbox-normalized node-MLP coordinates, and the R6
-node-conditioned residual appearance branch (8-D node feature, 16-D Gaussian
-embedding, 13-D time encoding, `37-64-64-3`, `0.3*tanh`, multiplicative color,
-`lambda_res=0`). Weighted FPS and adaptive-node changes are intentionally not
-part of this revision.
-
-Run the matched protocol with:
+Output mặc định nằm trong `output/`, thư mục mới theo thời gian. `--out` phải là thư mục chưa tồn tại. Checkpoint mới nằm trong `<out>/model/`. Ví dụ tiếp tục checkpoint U7 đã lưu ở 15k:
 
 ```bash
-bash run_joint_b1_bbox_r6.sh full c1_sigmoid2_t4_v4
+CUDA_VISIBLE_DEVICES=0 ./run.sh train --scene transverse \
+  --run output/transverse_retrain/model --iteration 15000 --end 30000 \
+  --out output/transverse_resume
 ```
 
-The completed `c1_sigmoid2_t4_v4` run reached PSNR `27.4416`, SSIM `0.70838`,
-LPIPS-Alex `0.52820`, and Depth MSE `0.00210943`. Its local checkpoint remains
-at `output/joint_b1_bbox_r6/c1_sigmoid2_t4_v4/point_cloud/iteration_30000`;
-generated checkpoints and datasets are intentionally excluded from Git. See
-[`docs/joint_b1_bbox_r6_results.md`](docs/joint_b1_bbox_r6_results.md) for the
-protocol, efficiency measurements, and checkpoint audit.
+## Phạm vi chính xác
 
-## Data:  
+- Hai scene đã thực nghiệm: transverse và rectum, mỗi scene 200.000 Gaussian, G3-Surf + learned spatial J8, appearance K4 cố định ở 2.000 FPS nodes.
+- **Prefix 10k có sẵn**, gồm model, Adam, RNG, G3/J8/KNN99. U7 thêm 20k updates đến 30k. Lệnh `train` tái thực hiện phần U7, không dựng lại coarse/prefix từ đầu.
+- Prefix bắt nguồn từ RGB/depth coarse100; GT PLY không dùng để khởi tạo hoặc training. Checkpoint cuối 30k, mask/floor và canonical reference đều được kèm theo.
+- TRAIN: toàn bộ 200 ảnh root. TEST: toàn bộ 200 ảnh trong folder `test/`.
+- R6 + Additive025 + world-space MicroDisp195; các thông số cụ thể trong [docs/U7_PROTOCOL.md](docs/U7_PROTOCOL.md).
+- Dataset mới cần coarse/prefix, scale gate và mask TRAIN mới; không được ghép dataset khác với prefix/mask hiện tại.
+- Bản này đóng gói **U7 DynamicColon**. P/sigmoid2 không thuộc baseline này.
 
-All data used in our work is available here: https://zenodo.org/records/18763383
+`evaluate --geometry` đọc `ply/pc_0001.ply`…`pc_0200.ply` chỉ ở bước đánh giá sau training và tạo cache trong output. Bỏ `--geometry` để chỉ đo RGB/depth/FPS. `--max-frames 2` là kiểm tra một phần, được ghi rõ `partial: true`; không thay bảng kết quả TEST200.
 
+## Kết quả gốc tại fine30k
 
-## Acknowledgements:  
-We thank the authors of publicly available repositories: 
-- [ENDO-4DGX](https://github.com/lastbasket/Endo-4DGX). 
-- [EndoPlanar](https://github.com/ThatphumCpre/EndoPlanar)
-- [SurgicalGS](https://github.com/neneyork/SurgicalGS)
-- [Endo-4DGS](https://github.com/lastbasket/Endo-4DGS)
-- [Deform3DGS](https://github.com/jinlab-imvr/Deform3DGS)
-- [RADE-GS](https://github.com/HKUST-SAIL/RaDe-GS)
-- [C3VDv2](https://durrlab.github.io/C3VDv2/) - we used C3VDv2 meshes to create DynamicColon.
+| Scene | PSNR | SSIM | LPIPS-A | Raw depth MSE | Normalized depth MSE | CH | HD95 | FPS |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| transverse | 34.416100 | 0.953586 | 0.208249 | 0.02411265 | 0.0003143100 | 0.07057610 | 0.61610891 | 110.78 |
+| rectum | 33.732378 | 0.960449 | 0.171300 | 0.20798758 | 0.0004006378 | 0.26466275 | 1.04774167 | 119.72 |
 
+Đây là kết quả gốc của một lần train mỗi nhánh. Các ngưỡng đồng thời Stage 11 **chưa đạt**. Thời gian train thêm20k là 33.30 / 33.06 phút; không bao gồm prefix, pilot và evaluation. FPS phụ thuộc phiên đo và GPU.
 
-## Implementation notes on fair comparison with baselines
-- We noticed diffrent baselines have differently implemented `LPIPS` measurement (input normalization). We pass image in range 0-1 and use normalization inside model. We applied the same computation for all baselines (see how we do it in `utils/image_utils.py/lpips_score`).  
-- For fair comparison of geometry, we do not use densification and pruning for baseline methods on DynamicColon. We mostly do not want to prune Gaussians which could potentially lower the scores CH and HD95 for other baselines. We densely initialize Gaussians with point cloud from Blender which should be sufficient for reconstruction.  
-- Baseline methods handle depth differently - some relying on normalized depth, others on metric depth - their original depth losses are not always directly compatible with AnyDepth/ColonCrafter depth maps. This in practice led to convergence issues. To ensure a fair comparison, we apply the same L1 depth loss on normalized depth maps across all methods. We also tune depth loss weights and training iterations for each baseline to obtain the most satisfactory renderings and consistent geometry for each method.
+Chi tiết: [reference_results/U7_metrics.json](reference_results/U7_metrics.json), metric từng frame và báo cáo Stage 11 trong `reference_results/`.
+
+## Bố cục
+
+```text
+u7.py, run.sh, activate.sh       entrypoint chính
+assets/{transverse,rectum}/
+  prefix_10000/                 checkpoint prefix + optimizer/RNG
+  u7_30000/                    checkpoint U7 đã train
+  boundary/                    mask, floor, opacity fine0, visibility counts
+  references/                  KNN99, G3 reference, K8 candidates
+  scale_gate.json              số đo TRAIN fine0, không chọn bằng TEST
+configs/U7_*.json               cấu hình checkpoint chốt
+scene/, utils/, train.py        native model/renderer/loss
+tools/u7_engine.py             U7 training và checkpoint lifecycle
+reference_results/             kết quả TEST200 gốc
+verification/                  bằng chứng kiểm tra bản đóng gói
+scripts/verify_package.py       xác minh manifest
+submodules/                    source CUDA dependencies + licenses
+```
+
+Các helper trong `tools/` giữ tên lịch sử để bảo toàn native implementation; dùng `u7.py` làm entrypoint. Loader này khôi phục đầy đủ mask/floor/reference của U7, không dùng một loader Gaussian chung thiếu các trường này.
+
+## Môi trường
+
+Đã kiểm tra bằng Conda Python3.9 / Torch2.6.0+cu126 / RTX A4000. `environment.lock.yml` là bản export môi trường đã dùng; `requirements.txt` ghi các phiên bản Python package chính. Việc tạo môi trường trên máy mới chưa được kiểm thử trong lần đóng gói này. CUDA toolkit/compiler và extension cần tương thích với Torch/GPU.
+
+Source extension nằm ở `submodules/simple-knn`, `submodules/diff-gaussian-rasterization-radegs` và `submodules/diff-gaussian-rasterization-texture`. Các binary đã cài trong `.env` không được chép vào folder; trên máy mới cần build/cài chúng trong Conda tương ứng. Giữ nguyên LICENSE và license của các submodule.

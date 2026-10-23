@@ -1,0 +1,133 @@
+{
+  "metrics": {
+    "PSNR": 33.73237845420837,
+    "SSIM": 0.9604494604468345,
+    "LPIPS_A": 0.17130019448697567,
+    "LPIPS_V": 0.32392012849450114,
+    "RGB_L1": 0.011228129772935063,
+    "RGB_MSE": 0.00047392164866323584,
+    "Depth_MSE_raw": 0.2079875813983381,
+    "Depth_MSE_normalized": 0.0004006377661607985,
+    "Fold_Depth": 0.001247140449413564,
+    "Fold_Depth_raw": 0.6502557000890374,
+    "fold_pixels": 84241.01,
+    "valid_depth_pixels": 422500.0,
+    "CH": 0.26466274949622537,
+    "HD95": 1.0477416658765097,
+    "CH_pred_to_GT": 0.08703835710224041,
+    "CH_GT_to_pred": 0.17762439239398498,
+    "HD95_pred_to_GT": 0.47527789680649285,
+    "HD95_GT_to_pred": 1.0477416658765097,
+    "image_gradient_L1": 0.002997914195293561,
+    "RMSE": 0.02176974158466829,
+    "RMSE_MAE_ratio": 1.9388573186198241
+  },
+  "performance": {
+    "native_gpu_ms": 8.353029174804687,
+    "FPS": 119.71704863863141,
+    "wall_ms": 8.348968411640575,
+    "repeats_gpu_ms": [
+      8.364554443359374,
+      8.353029174804687,
+      8.32785400390625
+    ],
+    "peak_memory_mb": 580.43310546875
+  },
+  "runtime": {
+    "training_seconds": 1983.5044657723047,
+    "peak_VRAM_MiB": 2449.29248046875,
+    "appearance": "r6_additive_micro",
+    "appearance_parameters": 3823177,
+    "trainable_groups": {
+      "xyz": 600000,
+      "deformation": 66835,
+      "f_dc": 600000,
+      "opacity": 200000,
+      "scaling": 600000,
+      "rotation": 800000,
+      "deformation_table": 3200000,
+      "graph_residual": 4803,
+      "skinning": 1600000
+    },
+    "optimizer_steps": {
+      "xyz": [
+        30000
+      ],
+      "deformation": [
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        20000,
+        20000,
+        20000,
+        20000
+      ],
+      "f_dc": [
+        30000
+      ],
+      "opacity": [
+        29997
+      ],
+      "scaling": [
+        30000
+      ],
+      "rotation": [
+        30000
+      ],
+      "deformation_table": [
+        30000
+      ],
+      "graph_residual": [
+        28000,
+        28000,
+        28000,
+        28000,
+        28000,
+        28000
+      ],
+      "skinning": [
+        25000
+      ]
+    },
+    "requires_grad_fields": {
+      "_xyz": true,
+      "_scaling": true,
+      "_rotation": true,
+      "_opacity": true,
+      "features": true,
+      "_deformation_table": true
+    },
+    "actual_trainable_groups": {
+      "xyz": 600000,
+      "deformation": 66835,
+      "f_dc": 600000,
+      "opacity": 200000,
+      "scaling": 600000,
+      "rotation": 800000,
+      "deformation_table": 3200000,
+      "graph_residual": 4803,
+      "skinning": 1600000
+    },
+    "R6_all_appearance_trainable": true,
+    "HF_parameters": 0,
+    "appearance_mode": "r6_additive_micro",
+    "total_trainable_parameters": 7671638
+  },
+  "frames": 200,
+  "checkpoint": 30000,
+  "read_only_integrity": true,
+  "geometry_camera": "camera-independent Gaussian centers; original node deformation + P world-space micro only",
+  "training_time": "new20k for DynamicColon; new25k from exactP5k for P"
+}

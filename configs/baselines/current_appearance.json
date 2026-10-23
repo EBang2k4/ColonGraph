@@ -1,0 +1,11 @@
+{
+  "method": "Independent cubic Spline32",
+  "controls": 32,
+  "iterations": 30000,
+  "selected_by": "explicit user instruction 2026-10-13",
+  "blending_baseline": "J GGAS-v2 spatial-only learned K8",
+  "validated_reference_protocol": "G3-Surf geometry30k then frozen geometry plus additionalSpline32 appearance30k",
+  "current_requested_protocol": "joint geometry+Spline32 fine1..30000; Weighted FPS2000+importance400; compare K4 and J",
+  "new_joint_protocol_validated": false,
+  "study": "/home/robot/colongraph/ColonGraph-texture/output/experiments/weighted_spline32_joint/c1_sigmoid2_t4_v4/run_20261013_startup03"
+}

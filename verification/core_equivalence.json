@@ -1,0 +1,16 @@
+{
+  "pass_": true,
+  "byte_identical_native_equations": {
+    "train.py": true,
+    "gaussian_renderer/__init__.py": true,
+    "utils/stage7.py": true,
+    "utils/stage9.py": true,
+    "utils/stage10.py": true,
+    "utils/stage11.py": true
+  },
+  "only_native_model_methods_changed_for_metadata": [
+    "load_model",
+    "save_deformation"
+  ],
+  "weights_and_architecture_unchanged": true
+}

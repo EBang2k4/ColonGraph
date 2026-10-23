@@ -1,0 +1,15 @@
+{
+  "pass_": true,
+  "scene": "transverse",
+  "checkpoint": 30000,
+  "Gaussians": 200000,
+  "geometry_nodes": 2000,
+  "appearance_nodes": 2000,
+  "model_sha256": "7f15f83102d6870a670d88006825f496d76425cda25dcb4d4c34a1b9f215519d",
+  "Adam_sha256": "570be0cfedce4a90e8d72d122cd7788da8f3db9a4e776baa5c761f4d52daf171",
+  "mask_fraction": 0.2833699882030487,
+  "camera_independent": true,
+  "original_stage11_render_errors": null,
+  "read_only": true,
+  "external_experiment_IO_blocked": true
+}

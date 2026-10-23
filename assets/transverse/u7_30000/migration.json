@@ -1,0 +1,14 @@
+{
+  "pass_": true,
+  "source": "/home/robot/colongraph/ColonGraph-stage11/output/experiments/adaptive_j8_transverse/run_20261020/runs/F0",
+  "source_sha256": "29421a0574834de462b6a7ebb15fba8cf9adc3255de36244fdfdb89ff48791ba",
+  "render_zero_head_errors": {
+    "render": 0.0,
+    "depth": 0.0,
+    "alpha": 0.0,
+    "transformed_points": 0.0
+  },
+  "old_Adam_exact": true,
+  "added_parameters": 390,
+  "reference": "canonical10k detached"
+}
