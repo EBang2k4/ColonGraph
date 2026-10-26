@@ -1,0 +1,25 @@
+{
+  "baseline": "M2_nearest16",
+  "release": "final clean source",
+  "fresh_training": true,
+  "coarse_iterations": 100,
+  "fine_iterations": 30000,
+  "input_model_checkpoint": false,
+  "packaged_checkpoints": false,
+  "packaged_references": false,
+  "packaged_results": false,
+  "G3_build_iteration": 2000,
+  "J8_build_iteration": 5000,
+  "M2_harmonic_build_iteration": 10000,
+  "geometry": "G3 + spatial-only learned K8; C3VD2000FPS+400importance, Dynamic2000FPS",
+  "appearance": "fixed2000K4 R6 + Additive025 + MicroDisp",
+  "harmonic_max": 150,
+  "geometry_regularizer": {
+    "before10k": "GaussianKNN99 lambda.01",
+    "after10k": "OriginalM2 nearest16-within99 lambda.01",
+    "Dynamic_gamma": "1interior/0peripheral",
+    "C3VD_gamma": 1
+  },
+  "point_cloud_inputs": "Dynamic: RGB/depth initialization; C3VD: native dataset initialization cloud or RGB/depth fallback",
+  "dataset_provided_separately": true
+}

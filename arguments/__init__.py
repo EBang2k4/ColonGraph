@@ -60,6 +60,8 @@ class ModelParams(ParamGroup):
         self.mode = 'monocular'
         self.no_fine = False
         self.init_pts = 200_000
+        # DynamicColon only; historical provided-PLY path remains the default.
+        self.dynamic_point_initialization = "provided_ply"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -78,21 +80,138 @@ class PipelineParams(ParamGroup):
 class ModelHiddenParams(ParamGroup):
     def __init__(self, parser):
         self.net_width = 64
+        self.texture_enabled = False
+        self.texture_activate_iteration = 5000
+        self.texture_lr_init = 0.0025
+        self.texture_lr_final = 0.00025
+        self.fine_stop_iteration = 0
+        self.full_state_checkpoints = ""
+        self.matched_texture_audit = False
+        self.matched_texture_source_iteration = 5000
+        self.freeze_geometry = False
         self.deformation_mode = "original"
         self.node_position_mode = "direct"
         self.node_position_normalization = "none"
         self.node_initialization_reference = ""
+        self.node_sampling = "fps"
+        self.node_sampling_alpha = 1.0
+        self.node_sampling_importance_reference = ""
+        self.node_sampling_gradient_source = "total"
+        self.node_importance_extra_nodes = 0
+        self.gaussian_knn_reference = ""
+        self.gaussian_knn_save = ""
+        # Fine-stage geometry regularizer.  Coarse always retains the matched
+        # KNN-99 term so paired branches reach the same post-coarse state.
+        self.geometry_regularizer = "knn99"
+        self.arap_weight = 0.0
+        self.canonical_laplacian_weight = 0.01
+        self.arap_k = 6
+        self.arap_eval_k = 8
+        self.arap_seed = 1907
+        self.arap_gradient_audit_iterations = "2000,5000,10000"
+        self.local_isometry_weight = 0.0
+        self.local_isometry_k = 12
+        self.local_isometry_min_degree = 4
+        self.local_isometry_temporal_window = 4
+        self.local_isometry_seed = 2718
+        self.node_edge_graph_reference = ""
+        self.node_edge_weight = 0.0
+        self.node_edge_start_iteration = 2000
+        self.node_edge_seed = 31415
+        self.node_edge_gradient_audit_iterations = "2000,5000,10000,30000"
+        self.fine_warmup_reference = ""
+        self.fine_warmup_state = ""
+        self.fine_stage_state_save = ""
+        # Opt-in exact causal branchpoint, after the 5k Adam step, BEFORE split.
+        self.pre_split_branchpoint_stop = ""
+        self.rcap_reference = ""
+        self.connectivity_ablation_audit = False
+        # G1-G3: E4 connectivity participates in the deformation forward pass,
+        # never as an auxiliary graph loss.
+        self.graph_forward_mode = "none"
+        self.graph_forward_reference = ""
+        self.graph_forward_hidden_dim = 64
+        self.graph_forward_seed = 4242
+        self.graph_forward_monitor_iterations = "5000,10000,20000,30000"
+        self.graph_forward_cancellation_alpha = 0.10
+        # Graph reductions only; does not alter the custom rasterizer/backward.
+        self.graph_forward_deterministic = False
+        self.graph_forward_motion_reference = ""
+        # Opt-in G3 adaptive study; defaults preserve every fixed-graph run.
+        self.graph_forward_adaptive = False
+        self.surface_graph_refine = False
+        self.surface_child_mode = "none"  # none / control / adaptive / shadow
+        self.adaptive_g3_score = "current"
+        self.adaptive_g3_placement = "centroid"
+        self.adaptive_g3_state = ""
+        self.adaptive_g3_admission = "legacy"
+        self.adaptive_g3_signal = "legacy"
+        self.adaptive_g3_quota_reference = ""
+        # Resets only the fine-stage sampling RNG, after the common untrained
+        # initialization has been restored.
+        self.experiment_seed = 0
+        self.reset_fine_rng = False
+        self.adaptive_node_mode = "none"
+        self.adaptive_node_start = 5000
+        self.adaptive_node_end = 20000
+        self.adaptive_node_interval = 2500
+        self.adaptive_node_split_end = 20000
+        self.adaptive_node_prune_start = 22500
+        self.adaptive_node_max = 2400
+        self.adaptive_node_min = 1600
+        self.adaptive_node_max_splits = 60
+        self.adaptive_node_max_prunes = 40
+        self.adaptive_node_prune_windows = 2
+        self.adaptive_node_prune_quantile = 0.20
+        self.adaptive_node_prune_redundancy_distance_ratio = 1.0
+        self.adaptive_node_prune_redundancy_overlap = 0.50
+        self.adaptive_node_prune_motion_error_ratio = 0.01
+        self.adaptive_node_prune_safe_error_ratio = 0.002
+        self.adaptive_node_score_decay = 0.99
+        self.adaptive_node_running_decay = 0.9
+        self.adaptive_node_split_z = 1.0
+        self.adaptive_node_min_coverage = 32
+        self.adaptive_node_min_age = 5000
+        self.adaptive_node_weight_threshold = 0.05
+        self.adaptive_node_max_split_shock_ratio = 0.01
         self.num_nodes = 2000
         self.node_k = 4
+        self.geometry_blend_mode = "idw"
+        self.geometry_blend_beta = 2.5
+        self.geometry_blend_cache = ""
+        self.ggas_variant = "none"
+        self.ggas_candidates = ""
+        self.ggas_lr = 0.001
+        self.ggas_lambda = 0.01
+        self.ggas_ramp_end = 6000
+        self.ggas_delta_max = 1.5
+        self.ggas_study_version = 1
+        self.ggas_sc_edges = ""
+        self.ggas_sc_lambda = 0.0
+        self.ggas_sc_batch_size = 65536
+        self.ggas_sc_start = 6001
+        self.ggas_sc_calibration = False
+        self.geometry_study_enabled = False
+        self.geometry_study_refresh = "none"
+        self.geometry_study_refresh_interval = 1000
+        self.geometry_study_freeze_iteration = 20000
+        self.geometry_study_camera_seed = 0
         self.node_mlp_width = 128
         self.node_mlp_depth = 3
         self.deformation_profile_interval = 100
         # Appearance implementation used during the fine stage.  The legacy
         # default remains HexPlane so old configs/checkpoints are unchanged.
         self.color_model = "hexplane"
+        self.appearance_mode = "r6"
+        self.r6_additive_cap = 0.15
+        self.hf_eta = 0.15
+        self.hf_lr = 0.0001
         self.color_residual_scale = 0.1
         self.color_residual_tanh = True
         self.node_appearance_dim = 8
+        self.node_scale_residual_ratio = 0.1
+        self.node_rotation_residual_ratio = 0.1
+        self.node_appearance_graph_mode = "shared"
         self.appearance_seed = 0
         self.timebase_pe = 4
         self.defor_depth = 1
@@ -134,6 +253,8 @@ class OptimizationParams(ParamGroup):
         self.dataloader=False
         self.iterations = 30_000
         self.coarse_iterations = 100
+        self.stage3_dynamics = False
+        self.stage5_profile = "J"
         self.position_lr_init = 0.00016 #0.00016
         self.position_lr_final = 0.0000016 #0.0000016
         
@@ -184,6 +305,7 @@ class OptimizationParams(ParamGroup):
         # Residual-appearance regularization.  This is used only when
         # color_model=node_residual_mlp; HexPlane continues to use dcol_weight.
         self.lambda_res=0.005
+        self.loss_rgb_mode = "l1"
         self.col_smooth_weight = 0.0001
 
         super().__init__(parser, "Optimization Parameters")

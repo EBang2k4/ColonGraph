@@ -1,0 +1,78 @@
+{
+  "pass_": true,
+  "source_only": true,
+  "tests": {
+    "transverse": {
+      "coarse_steps": 100,
+      "fine_updates": 12,
+      "compressed_schedule": true,
+      "all_stages_pass": true,
+      "admitted_harmonic": 150,
+      "checkpoint_loaded": "own smoke output only",
+      "coldreload": {
+        "pass_": true,
+        "model_exact": true,
+        "Adam_exact": true,
+        "harmonic_exact": true,
+        "Gaussians": 200000,
+        "harmonic_nodes": 150
+      },
+      "rendered_and_decoded_videos": 8
+    },
+    "rectum": {
+      "coarse_steps": 100,
+      "fine_updates": 12,
+      "compressed_schedule": true,
+      "all_stages_pass": true,
+      "admitted_harmonic": 150,
+      "checkpoint_loaded": "own smoke output only",
+      "coldreload": {
+        "pass_": true,
+        "model_exact": true,
+        "Adam_exact": true,
+        "harmonic_exact": true,
+        "Gaussians": 200000,
+        "harmonic_nodes": 150
+      }
+    },
+    "sigmoid2": {
+      "coarse_steps": 100,
+      "fine_updates": 12,
+      "compressed_schedule": true,
+      "all_stages_pass": true,
+      "admitted_harmonic": 150,
+      "checkpoint_loaded": "own smoke output only",
+      "coldreload": {
+        "pass_": true,
+        "model_exact": true,
+        "Adam_exact": true,
+        "harmonic_exact": true,
+        "Gaussians": 364500,
+        "harmonic_nodes": 150
+      },
+      "rendered_and_decoded_videos": 22
+    }
+  },
+  "full30k_training_executed": false,
+  "benchmark_metrics_reused": false,
+  "final_folder_fresh_smoke": {
+    "pass_": true,
+    "scene": "transverse",
+    "coarse_steps": 100,
+    "fine_updates": 12,
+    "all_stages_executed": true,
+    "external_checkpoint_access_forbidden": true
+  },
+  "vendored_build_dependencies": {
+    "simple_knn_source": true,
+    "radegs_GLM_headers": true,
+    "texture_GLM_headers": true,
+    "note": "Bundled from existing ColonGraph dependency source; no dependency version upgrade.",
+    "CUDA_build_and_import_pass": [
+      "simple-knn",
+      "diff-gaussian-rasterization-radegs",
+      "diff-gaussian-rasterization-texture"
+    ],
+    "simple_knn_CUDA_kernel_pass": true
+  }
+}

@@ -1,6 +1,0 @@
-[submodule "submodules/simple-knn"]
-	path = submodules/simple-knn
-	url = https://gitlab.inria.fr/bkerbl/simple-knn.git
-[submodule "submodules/depth_anything"]
-	path = submodules/depth_anything
-	url = https://github.com/fabio-sim/Depth-Anything-ONNX.git

@@ -1,0 +1,12 @@
+name: colongraph_m2
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - setuptools<81
+  - wheel
+  - ninja
+  - cuda-toolkit=12.6
+  - gcc_linux-64=12
+  - gxx_linux-64=12

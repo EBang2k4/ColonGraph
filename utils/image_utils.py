@@ -24,8 +24,8 @@ from math import exp
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-lpips_alex = lpips.LPIPS(net='alex') # best forward scores
-lpips_vgg = lpips.LPIPS(net='vgg') # closer to "traditional" perceptual loss, when used for optimization
+lpips_alex = None
+lpips_vgg = None
 
 def tensor2array(tensor):
     if torch.is_tensor(tensor):
@@ -107,6 +107,7 @@ def write_png(path, data):
     Image.fromarray(data).save(path)
     
 def lpips_score(img1, img2, net='alex', format='NCHW'):
+    global lpips_alex,lpips_vgg
     if format == 'HWC':
         img1 = img1.permute([2, 0, 1])[None, ...]
         img2 = img2.permute([2, 0, 1])[None, ...]
@@ -115,9 +116,11 @@ def lpips_score(img1, img2, net='alex', format='NCHW'):
         img2 = img2.permute([0, 3, 1, 2])
 
     if net == 'alex':
+        if lpips_alex is None:lpips_alex=lpips.LPIPS(net='alex')
         model = lpips_alex.to(img1.device)
         return model(img1, img2, normalize=True)
     elif net == 'vgg':
+        if lpips_vgg is None:lpips_vgg=lpips.LPIPS(net='vgg')
         model = lpips_vgg.to(img1.device)
         return model(img1, img2,normalize=True)
     
